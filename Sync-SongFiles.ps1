@@ -28,10 +28,8 @@ function Ask-YesNo {
         Switch($Confirm[0])
         {
             Y { 
-                Write-Host "Yes"
                 Return "y" }
             N { 
-                Write-Host "No"
                 Return "n" }
             Default { $Confirm = $null }
         }
@@ -105,13 +103,9 @@ if($AddRename) {
 
     If($YesNo -eq "y")
     {
-        Write-Host "Yes"
         ForEach($NewFile in $AddRename) {
             Rename-Item -Path ($Newfile.SourceDir + "\" + $NewFile.SourceFile) -NewName $NewFile.DestFile
-    #        Write-Host "$($Newfile.SourceDir + "\" + $NewFile.SourceFile) --- $NewFile.$DestFile"
-
-        }
-        Write-Host "$AddRename.SourceFile -> $AddRename.Destfile"
+         }
     }
     Else {
         Write-Host "No. Exiting.."
