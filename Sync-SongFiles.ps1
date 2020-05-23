@@ -39,13 +39,13 @@ function Ask-YesNo {
 
 
 
-If(-not (Test-Path($SourceDir))) {   # If $SourceDir is not a valid path
+If(-not (Test-Path -LiteralPath $SourceDir)) {   # If $SourceDir is not a valid path
     Write-Host -ForegroundColor Red "'$SourceDir' Is not a valid path... Exiting."
     Exit
       
     }
 
-If(-not (Test-Path($DestDir))) {   # If $DestDir is not a valid path
+If(-not (Test-Path -LiteralPath $DestDir)) {   # If $DestDir is not a valid path
     Write-Host -ForegroundColor Red "'$DestDir' Is not a valid path... Exiting."
     Exit
     }
@@ -53,12 +53,12 @@ If(-not (Test-Path($DestDir))) {   # If $DestDir is not a valid path
 
 # Get-ChildItems from both directories
 
-$Source = Get-ChildItem -Path $SourceDir | Where-Object {$_.Name -match "^\d.+\.(m4a|flac|ogg|mp3)$"}
-$Dest   = Get-ChildItem -Path $DestDir   | Where-Object {$_.Name -match "^\d.+\.(m4a|flac|ogg|mp3)$"}
+$Source = Get-ChildItem -LiteralPath $SourceDir | Where-Object {$_.Name -match "^\d.+\.(m4a|flac|ogg|mp3)$"}
+$Dest   = Get-ChildItem -LiteralPath $DestDir   | Where-Object {$_.Name -match "^\d.+\.(m4a|flac|ogg|mp3)$"}
 
 if($Source.Count -ne $Dest.Count) {
-    Write-Output "Unequal number of songs in the specified directories...Exiting"
-    Exit
+    Write-Host -ForegroundColor Red "WARNING: Unequal number of songs in the specified directories."
+    
 }
 
 # Rename-Item all files
@@ -75,24 +75,20 @@ Foreach($File in $Source) {
 
     $DestFilename = ($Dest.name -match "^$SongNum")[0]
 
-    if(($File.Name.Substring(($File.Name.Length-3),3)) -ne ($DestFilename.Substring(($DestFilename.Length-3),3))) {  #If the three characters of the file extension don't match. 
-        Write-Host -ForegroundColor Yellow "File extensions do not match...Exiting"
-        Break
-    }
-    
-    if($File.Name -ne $DestFilename) {
-        # Write-Host -ForegroundColor Red "Renaming $File = $DestFilename ..."
-#       Test-Path ($SourceDir + "\" + $File)
+    if($DestFilename) {
+        if(($File.Name.Substring(($File.Name.Length-3),3)) -ne ($DestFilename.Substring(($DestFilename.Length-3),3))) {  #If the three characters of the file extension don't match. 
+            Write-Host -ForegroundColor Yellow "File extensions do not match...Exiting"
+            Break
+        }
+    }   
+    if($Destfilename -and $File.Name -ne $DestFilename) {
+
         $AddRename += @(
             [PSCustomObject]@{SourceDir=$SourceDir; SourceFile=$File.Name; DestFile=$DestFilename}
             )
 
-#        Rename-Item -Path ($SourceDir + "\" + $File) -NewName $DestFilename
-        }
-    else {
-        # Write-Host -ForegroundColor Green "$File already matches..."
-        }
 
+        }
 }
 
 if($AddRename) {
@@ -104,7 +100,7 @@ if($AddRename) {
     If($YesNo -eq "y")
     {
         ForEach($NewFile in $AddRename) {
-            Rename-Item -Path ($Newfile.SourceDir + "\" + $NewFile.SourceFile) -NewName $NewFile.DestFile
+            Rename-Item -LiteralPath ($Newfile.SourceDir + "\" + $NewFile.SourceFile) -NewName $NewFile.DestFile
          }
     }
     Else {
