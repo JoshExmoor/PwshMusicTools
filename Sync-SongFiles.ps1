@@ -53,8 +53,8 @@ If(-not (Test-Path -LiteralPath $DestDir)) {   # If $DestDir is not a valid path
 
 # Get-ChildItems from both directories
 
-$Source = Get-ChildItem -LiteralPath $SourceDir | Where-Object {$_.Name -match "^\d.+\.(m4a|flac|ogg|mp3)$"}
-$Dest   = Get-ChildItem -LiteralPath $DestDir   | Where-Object {$_.Name -match "^\d.+\.(m4a|flac|ogg|mp3)$"}
+$Source = Get-ChildItem -LiteralPath $SourceDir | Where-Object {$_.Name -match "^\d.+\.(m4a|flac|ogg|opus|mp3)$"}
+$Dest   = Get-ChildItem -LiteralPath $DestDir   | Where-Object {$_.Name -match "^\d.+\.(m4a|flac|ogg|opus|mp3)$"}
 
 if($Source.Count -ne $Dest.Count) {
     Write-Host -ForegroundColor Red "WARNING: Unequal number of songs in the specified directories."
