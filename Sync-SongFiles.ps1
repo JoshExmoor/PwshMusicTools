@@ -33,6 +33,16 @@
     extension; only its base name is changed to match the reference file. Without
     this switch, a pair whose extensions differ is skipped with a warning.
 
+.PARAMETER TitleMatchThreshold
+    Minimum title similarity (0.0 to 1.0, default 0.6) required before a
+    number-matched pair is actually renamed. Pairing is by leading track number,
+    but two folders that are not the same release can still share track numbers
+    (e.g. one edition inserts bonus tracks, shifting every later title). This
+    guard compares the title portion of each pair (the name after the track
+    number, minus extension) and SKIPS with a warning any pair whose titles are
+    less similar than the threshold, so a shifted track listing is flagged rather
+    than silently renamed to the wrong song. Set to 0 to disable the check.
+
 .EXAMPLE
     .\Sync-SongFiles.ps1 -RenameDir 'D:\MP3\Album' -ReferenceDir 'D:\FLAC\Album' -WhatIf
 
@@ -66,7 +76,11 @@ Param(
     [String[]]$AudioExtensions = @('m4a', 'flac', 'ogg', 'opus', 'mp3'),
 
     [Parameter(Mandatory = $false)]
-    [Switch]$IgnoreExtension
+    [Switch]$IgnoreExtension,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(0.0, 1.0)]
+    [double]$TitleMatchThreshold = 0.6
 )
 
 Set-StrictMode -Version Latest
@@ -89,6 +103,58 @@ function Get-TrackNumber {
         return [int]$Matches[0]
     }
     return $null
+}
+
+function Get-Title {
+    <#
+        Extracts the comparable title portion of a file name: drops the leading
+        track number and any following separator (space, dash, dot, underscore,
+        parentheses), drops the extension, and lower-cases / collapses whitespace.
+        "05 - You A Millionaire.flac" -> "you a millionaire".
+    #>
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($Name)
+    # Remove leading digits and the separators that commonly follow a track number.
+    $title = $base -replace '^\s*\d+\s*[-_.\)\]]*\s*', ''
+    return ($title -replace '\s+', ' ').Trim().ToLowerInvariant()
+}
+
+function Get-Similarity {
+    <#
+        Normalized Levenshtein similarity in [0,1]: 1 - distance / maxLen.
+        Two empty strings are defined as identical (1.0).
+    #>
+    param([string]$A, [string]$B)
+
+    if ($A -eq $B) { return 1.0 }
+    $lenA = $A.Length
+    $lenB = $B.Length
+    if ($lenA -eq 0 -or $lenB -eq 0) { return 0.0 }
+
+    $prev = [int[]]::new($lenB + 1)
+    $curr = [int[]]::new($lenB + 1)
+    for ($j = 0; $j -le $lenB; $j++) { $prev[$j] = $j }
+
+    for ($i = 1; $i -le $lenA; $i++) {
+        $curr[0] = $i
+        $cA = $A[$i - 1]
+        for ($j = 1; $j -le $lenB; $j++) {
+            $cost = if ($cA -eq $B[$j - 1]) { 0 } else { 1 }
+            $del = $prev[$j] + 1
+            $ins = $curr[$j - 1] + 1
+            $sub = $prev[$j - 1] + $cost
+            $min = $del
+            if ($ins -lt $min) { $min = $ins }
+            if ($sub -lt $min) { $min = $sub }
+            $curr[$j] = $min
+        }
+        $tmp = $prev; $prev = $curr; $curr = $tmp
+    }
+
+    $distance = $prev[$lenB]
+    $maxLen = [Math]::Max($lenA, $lenB)
+    return 1.0 - ($distance / $maxLen)
 }
 
 # --- Validate inputs -------------------------------------------------------
@@ -194,6 +260,21 @@ $Renames = foreach ($File in $ToRename) {
         }
     }
 
+    # Guard against pairing the wrong song. Files are matched by track number, but
+    # two different releases can share numbers (e.g. an edition with extra tracks
+    # shifts every later title). Compare the title portions and skip if they are
+    # too dissimilar, so a shifted listing is flagged rather than mis-renamed.
+    # The score is always computed so it can be shown in the preview table; the
+    # threshold only governs whether a pair is skipped.
+    $renameTitle = Get-Title -Name $File.Name
+    $refTitle = Get-Title -Name $RefFile.Name
+    $titleScore = Get-Similarity -A $renameTitle -B $refTitle
+    if ($TitleMatchThreshold -gt 0 -and $titleScore -lt $TitleMatchThreshold) {
+        Write-Warning ("Title mismatch for track {0} (similarity {1:N2} < {2:N2}): rename '{3}' vs reference '{4}'. Skipping - these may be different releases. Lower -TitleMatchThreshold to override." -f `
+            $track, $titleScore, $TitleMatchThreshold, $File.Name, $RefFile.Name)
+        continue
+    }
+
     # Determine the target name. Normally this is the reference file's full name.
     # With -IgnoreExtension, keep the rename file's own extension and take only
     # the reference file's base name.
@@ -210,6 +291,7 @@ $Renames = foreach ($File in $ToRename) {
             CurrentName = $File.Name
             NewName     = $NewName
             FullPath    = $File.FullName
+            TitleScore  = [Math]::Round($titleScore, 2)
         }
     }
 }
@@ -224,7 +306,7 @@ if ($Renames.Count -eq 0) {
 }
 
 Write-Host "The following files will be renamed to match the reference folder:"
-$Renames | Format-Table -Property Track, CurrentName, NewName -AutoSize
+$Renames | Format-Table -Property Track, CurrentName, NewName, TitleScore -AutoSize
 
 # Confirm once for the whole batch rather than once per file. ShouldProcess also
 # drives -WhatIf: under -WhatIf it reports the batch and returns $false without
