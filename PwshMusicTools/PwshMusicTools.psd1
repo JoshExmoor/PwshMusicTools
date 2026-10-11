@@ -30,6 +30,7 @@
         'Export-M3U'
         'Convert-M3UPath'
         'Test-M3UPath'
+        'Invoke-IncomingMusic'
         'Sync-SongFiles'
         'Sync-SongDirectories'
     )
