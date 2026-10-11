@@ -29,6 +29,7 @@
         'Import-M3U'
         'Export-M3U'
         'Convert-M3UPath'
+        'Test-M3UPath'
         'Sync-SongFiles'
         'Sync-SongDirectories'
     )
