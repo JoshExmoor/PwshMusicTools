@@ -1,48 +1,3 @@
-﻿<#
-    Sync-SongFiles.ps1
-
-    Dual-purpose file: it defines the Sync-SongFiles function AND can be run
-    directly as a script for legacy use.
-
-      - Run as a script:   .\Sync-SongFiles.ps1 -RenameDir X -ReferenceDir Y
-        The script-level param block below binds the arguments and the shim at
-        the end invokes the function with them.
-
-      - Dot-source to load the function:   . .\Sync-SongFiles.ps1
-        This defines Sync-SongFiles in the current session without executing it,
-        so you (or another script) can call Sync-SongFiles later.
-
-    The script-level param block intentionally mirrors the function's param
-    block so that script invocation keeps full tab-completion, validation, and
-    -WhatIf / -Confirm support.
-#>
-[CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
-Param(
-    # NOTE: RenameDir/ReferenceDir are intentionally NOT Mandatory at the script
-    # level. A mandatory script parameter would prompt even when the file is
-    # merely dot-sourced to load the function. Mandatoriness is enforced on the
-    # function instead, which only runs when actually invoked.
-    [Parameter()]
-    [ValidateNotNullOrEmpty()]
-    [Alias('SourceDir')]
-    [String]$RenameDir,
-
-    [Parameter()]
-    [ValidateNotNullOrEmpty()]
-    [Alias('DestDir')]
-    [String]$ReferenceDir,
-
-    [Parameter()]
-    [String[]]$AudioExtensions = @('m4a', 'flac', 'ogg', 'opus', 'mp3'),
-
-    [Parameter()]
-    [Switch]$IgnoreExtension,
-
-    [Parameter()]
-    [ValidateRange(0.0, 1.0)]
-    [double]$TitleMatchThreshold = 0.6
-)
-
 function Sync-SongFiles {
     <#
     .SYNOPSIS
@@ -367,12 +322,4 @@ function Sync-SongFiles {
         # an elevated $ConfirmPreference would otherwise trigger here.
         Rename-Item -LiteralPath $Rename.FullPath -NewName $Rename.NewName -Confirm:$false
     }
-}
-
-# --- Script invocation shim ------------------------------------------------
-# When this file is run as a script (not dot-sourced), forward the script's
-# bound parameters to the function. Dot-sourcing ('. .\Sync-SongFiles.ps1')
-# sets InvocationName to '.', so the function is defined but not executed.
-if ($MyInvocation.InvocationName -ne '.') {
-    Sync-SongFiles @PSBoundParameters
 }
