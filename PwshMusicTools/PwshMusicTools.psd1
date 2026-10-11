@@ -28,6 +28,7 @@
         'Find-MatchingDirectories'
         'Import-M3U'
         'Export-M3U'
+        'Convert-M3UPath'
         'Sync-SongFiles'
         'Sync-SongDirectories'
     )

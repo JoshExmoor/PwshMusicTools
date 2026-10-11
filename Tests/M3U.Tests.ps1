@@ -61,6 +61,43 @@ Describe 'Export-M3U / Import-M3U' {
         }
     }
 
+    Context 'Export-M3U -LineEnding' {
+
+        It 'writes LF-only line endings with -LineEnding LF' {
+            $pl = Join-Path $root 'lf.m3u8'
+            @('a.flac', 'b.flac') | Export-M3U $pl -LineEnding LF
+
+            $raw = [System.IO.File]::ReadAllText($pl)
+            $raw | Should -Not -Match "`r"           # no carriage returns at all
+            $raw | Should -Be "a.flac`nb.flac"
+        }
+
+        It 'writes CRLF line endings with -LineEnding CRLF (default)' {
+            $pl = Join-Path $root 'crlf.m3u8'
+            @('a.flac', 'b.flac') | Export-M3U $pl -LineEnding CRLF
+
+            $raw = [System.IO.File]::ReadAllText($pl)
+            $raw | Should -Be "a.flac`r`nb.flac"
+        }
+
+        It 'defaults to CRLF when -LineEnding is omitted' {
+            $pl = Join-Path $root 'default.m3u8'
+            @('a.flac', 'b.flac') | Export-M3U $pl
+
+            $raw = [System.IO.File]::ReadAllText($pl)
+            $raw | Should -Be "a.flac`r`nb.flac"
+        }
+
+        It 'applies the line ending to #EXTINF lines too' {
+            $pl = Join-Path $root 'ext-lf.m3u8'
+            [PSCustomObject]@{ Path = 'song.flac'; Duration = 100; Title = 'Song' } |
+                Export-M3U $pl -Extended -LineEnding LF
+
+            $raw = [System.IO.File]::ReadAllText($pl)
+            $raw | Should -Be "#EXTM3U`n#EXTINF:100,Song`nsong.flac"
+        }
+    }
+
     Context 'Import-M3U' {
 
         It 'returns one object per entry and skips comments and blank lines' {

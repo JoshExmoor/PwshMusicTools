@@ -30,6 +30,11 @@ function Export-M3U {
 .PARAMETER Force
     Overwrite the destination if it already exists.
 
+.PARAMETER LineEnding
+    The line ending to write between entries: 'CRLF' (Windows, "`r`n"), 'LF'
+    (Unix, "`n"), or 'CR' (classic Mac, "`r"). Defaults to 'CRLF'. Use 'LF' when
+    writing a playlist for a Linux machine.
+
 .EXAMPLE
     # Plain playlist from a folder of audio files
     Get-ChildItem C:\Music -Filter *.flac | Export-M3U .\album.m3u
@@ -37,6 +42,10 @@ function Export-M3U {
 .EXAMPLE
     # Round-trip with metadata preserved
     Import-M3U .\in.m3u8 | Export-M3U .\out.m3u8 -Extended -Force
+
+.EXAMPLE
+    # Write a playlist for a Linux machine with Unix (LF) line endings
+    Import-M3U .\in.m3u | Export-M3U .\out.m3u8 -Extended -Force -LineEnding LF
 #>
     [CmdletBinding()]
     param(
@@ -50,7 +59,10 @@ function Export-M3U {
 
         [string] $Encoding = 'UTF8',
 
-        [switch] $Force
+        [switch] $Force,
+
+        [ValidateSet('CRLF', 'LF', 'CR')]
+        [string] $LineEnding = 'CRLF'
     )
 
     begin {
@@ -58,8 +70,10 @@ function Export-M3U {
             throw "Destination already exists (use -Force to overwrite): $Path"
         }
 
-        $sb = [System.Text.StringBuilder]::new()
-        if ($Extended) { [void]$sb.AppendLine('#EXTM3U') }
+        # Collect lines and join them in `end` with the requested newline, so the
+        # line ending is controlled precisely rather than inherited from the OS.
+        $lines = [System.Collections.Generic.List[string]]::new()
+        if ($Extended) { $lines.Add('#EXTM3U') }
         $script:__m3uCount = 0
     }
 
@@ -93,9 +107,9 @@ function Export-M3U {
 
             if ($Extended) {
                 if (-not $title) { $title = [IO.Path]::GetFileNameWithoutExtension($entryPath) }
-                [void]$sb.AppendLine("#EXTINF:$duration,$title")
+                $lines.Add("#EXTINF:$duration,$title")
             }
-            [void]$sb.AppendLine($entryPath)
+            $lines.Add($entryPath)
             $script:__m3uCount++
         }
     }
@@ -106,9 +120,17 @@ function Export-M3U {
             New-Item -ItemType Directory -Path $parent -Force | Out-Null
         }
 
-        # Write without a trailing blank line; honor the requested encoding.
-        $text = $sb.ToString().TrimEnd("`r", "`n")
-        Set-Content -LiteralPath $Path -Value $text -Encoding $Encoding
+        $newline = switch ($LineEnding) {
+            'LF'   { "`n" }
+            'CR'   { "`r" }
+            default { "`r`n" }   # CRLF
+        }
+
+        # Join with the chosen newline and write with -NoNewline so neither the
+        # StringBuilder nor Set-Content can substitute the OS line ending. No
+        # trailing newline is added, matching the previous behavior.
+        $text = ($lines -join $newline)
+        Set-Content -LiteralPath $Path -Value $text -Encoding $Encoding -NoNewline
         Write-Verbose "Wrote $script:__m3uCount entr$(if ($script:__m3uCount -eq 1){'y'}else{'ies'}) to $Path"
     }
 }
