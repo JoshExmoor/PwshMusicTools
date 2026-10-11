@@ -221,9 +221,10 @@ function Find-MatchingDirectories {
                     })
             }
         }
-        # The unary comma prevents PowerShell from unwrapping a 0- or 1-element
-        # result, so the caller always receives an array.
-        return , $result.ToArray()
+        # Return a typed [object[]]. Casting (rather than a unary-comma wrapper)
+        # keeps a 0- or 1-element result a well-formed array for @() and indexing
+        # callers, without the comma's side effect of re-nesting under @(...).
+        return [object[]]$result.ToArray()
     }
 
     # Fuzzy: for a pair to be a candidate, the PARENT path (everything above the
@@ -269,7 +270,8 @@ function Find-MatchingDirectories {
         $usedSecond[$c.Second.FullPath] = $true
     }
 
-    # The unary comma prevents PowerShell from unwrapping a 0- or 1-element
-    # result, so the caller always receives an array.
-    return , $result.ToArray()
+    # Return a typed [object[]]. Casting (rather than a unary-comma wrapper)
+    # keeps a 0- or 1-element result a well-formed array for @() and indexing
+    # callers, without the comma's side effect of re-nesting under @(...).
+    return [object[]]$result.ToArray()
 }

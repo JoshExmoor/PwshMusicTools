@@ -5,14 +5,6 @@ BeforeAll {
 
 Describe 'Find-MatchingDirectories' {
 
-    # NOTE on result collection: the function returns its array via a unary comma
-    # (', $array') so a single match is not unwrapped to a scalar. Wrapping that
-    # call in @(...) RE-NESTS it (@() does not flatten a nested array), yielding a
-    # 1-element array whose only element is the real result array. These tests
-    # therefore collect results by piping through ForEach-Object, which unrolls
-    # the comma wrapper exactly as a normal caller iterating the output does.
-    # (See the note to the author: @(Find-MatchingDirectories ...) is a footgun.)
-
     BeforeEach {
         $script:root = New-TestDir
         $script:a = Join-Path $root 'first'
@@ -30,7 +22,7 @@ Describe 'Find-MatchingDirectories' {
             New-Item -ItemType Directory -Path (Join-Path $a 'Band\Album') -Force | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $b 'Band\Album') -Force | Out-Null
 
-            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 | ForEach-Object { $_ })
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2)
 
             # Every sub-directory level is enumerated, so both 'Band' (depth 0)
             # and 'Band\Album' (depth 1) are matched.
@@ -45,7 +37,7 @@ Describe 'Find-MatchingDirectories' {
             New-Item -ItemType Directory -Path (Join-Path $a 'Band\Studio\Album') -Force | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $b 'Band\Live\Album')   -Force | Out-Null
 
-            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 3 | ForEach-Object { $_ })
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 3)
 
             # Only the shared 'Band' prefix matches; the diverging leaf paths
             # ('Band\Studio\Album' vs 'Band\Live\Album') do not pair.
@@ -57,7 +49,7 @@ Describe 'Find-MatchingDirectories' {
             New-Item -ItemType Directory -Path (Join-Path $a 'BAND\album') -Force | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $b 'band\ALBUM') -Force | Out-Null
 
-            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 | ForEach-Object { $_ })
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2)
 
             # 'BAND'/'band' and 'album'/'ALBUM' match despite case differences,
             # giving one pair per level (depth 0 and depth 1).
@@ -65,24 +57,41 @@ Describe 'Find-MatchingDirectories' {
             $result.Count | Should -Be 2
         }
 
-        It 'always returns an array, even for a single match' {
+        It 'collects a single match as a one-element array' {
             New-Item -ItemType Directory -Path (Join-Path $a 'Solo') -Force | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $b 'Solo') -Force | Out-Null
 
-            $result = Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 1
+            # @() is the normal way a caller collects the output; it must yield a
+            # flat one-element array (not a scalar, not a nested array).
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 1)
 
-            $result -is [array] | Should -BeTrue
-            $result.Count | Should -Be 1
+            $result -is [array]     | Should -BeTrue
+            $result.Count           | Should -Be 1
+            $result[0] -is [array]  | Should -BeFalse
+            $result[0].First        | Should -Be (Join-Path $a 'Solo')
         }
 
-        It 'returns an empty array when nothing matches' {
+        It 'collects no matches as an empty array' {
             New-Item -ItemType Directory -Path (Join-Path $a 'OnlyLeft')  -Force | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $b 'OnlyRight') -Force | Out-Null
 
-            $result = Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 1
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 1)
 
             $result -is [array] | Should -BeTrue
             $result.Count | Should -Be 0
+        }
+
+        It 'does not re-nest when the call is wrapped in @()' {
+            # Regression guard: the function returns a typed [object[]], so @(...)
+            # must NOT produce a 1-element array holding the real result array.
+            New-Item -ItemType Directory -Path (Join-Path $a 'Band\Album') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $b 'Band\Album') -Force | Out-Null
+
+            $wrapped = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2)
+
+            $wrapped.Count       | Should -Be 2
+            $wrapped[0] -is [array] | Should -BeFalse
+            $wrapped[0].First    | Should -Not -BeNullOrEmpty
         }
     }
 
@@ -92,7 +101,7 @@ Describe 'Find-MatchingDirectories' {
             New-Item -ItemType Directory -Path (Join-Path $a 'Band\Album')        -Force | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $b 'Band\Album (live)') -Force | Out-Null
 
-            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 -Fuzzy -Threshold 0.5 | ForEach-Object { $_ })
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 -Fuzzy -Threshold 0.5)
 
             $pair = $result | Where-Object { (Split-Path $_.First -Leaf) -eq 'Album' }
             $pair | Should -Not -BeNullOrEmpty
@@ -103,7 +112,7 @@ Describe 'Find-MatchingDirectories' {
             New-Item -ItemType Directory -Path (Join-Path $a 'Band\Studio\Album') -Force | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $b 'Band\Live\Album')   -Force | Out-Null
 
-            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 3 -Fuzzy -Threshold 0.5 | ForEach-Object { $_ })
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 3 -Fuzzy -Threshold 0.5)
 
             # Same leaf 'Album' but parents differ (Studio vs Live) -> no pair.
             ($result | Where-Object { $_.First -like '*Studio*' }) | Should -BeNullOrEmpty
@@ -113,7 +122,7 @@ Describe 'Find-MatchingDirectories' {
             New-Item -ItemType Directory -Path (Join-Path $a 'Artist\Alpha')   -Force | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $b 'Artist\Omegaxx') -Force | Out-Null
 
-            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 -Fuzzy -Threshold 0.9 | ForEach-Object { $_ })
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 -Fuzzy -Threshold 0.9)
 
             ($result | Where-Object { $_.First -like '*Alpha' }) | Should -BeNullOrEmpty
         }
@@ -125,7 +134,7 @@ Describe 'Find-MatchingDirectories' {
             New-Item -ItemType Directory -Path (Join-Path $a 'P\Greatest Hits Deluxe')  -Force | Out-Null
             New-Item -ItemType Directory -Path (Join-Path $b 'P\Greatest Hits')         -Force | Out-Null
 
-            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 -Fuzzy -Threshold 0.5 | ForEach-Object { $_ })
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 -Fuzzy -Threshold 0.5)
 
             $leafPairs = @($result | Where-Object { (Split-Path $_.Second -Leaf) -eq 'Greatest Hits' })
             $leafPairs.Count | Should -Be 1
