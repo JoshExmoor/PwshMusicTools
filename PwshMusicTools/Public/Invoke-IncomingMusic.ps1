@@ -49,8 +49,14 @@ function Invoke-IncomingMusic {
 
         Requires the TagLibSharp library used by Get-AudioTags.
 
-    The function supports -WhatIf and -Confirm: under -WhatIf the renames and
-    moves are previewed without touching anything.
+    -RemoveEmptyDirectories
+        Recursively remove any sub-directory whose subtree contains no files (a
+        folder holding only other empty folders counts as empty). Runs last so it
+        cleans up directories left behind by -FixPaths. The base -Path itself is
+        never removed.
+
+    The function supports -WhatIf and -Confirm: under -WhatIf the renames, moves,
+    and removals are previewed without touching anything.
 
 .PARAMETER Path
     The root directory whose sub-directories will be processed. Audio files
@@ -65,6 +71,9 @@ function Invoke-IncomingMusic {
 
 .PARAMETER FixPaths
     Enable the tag-based folder-reorganization step described above.
+
+.PARAMETER RemoveEmptyDirectories
+    Enable the empty-directory pruning step described above.
 
 .PARAMETER Extension
     Audio file extensions to consider (without the leading dot). Defaults to the
@@ -101,6 +110,8 @@ function Invoke-IncomingMusic {
 
         [switch] $FixPaths,
 
+        [switch] $RemoveEmptyDirectories,
+
         [string[]] $Extension = @('flac','mp3','m4a','aac','ogg','opus','wav','wma','ape','wv')
     )
 
@@ -125,8 +136,8 @@ function Invoke-IncomingMusic {
             return
         }
 
-        if (-not ($AudioIntegrity -or $CheckTrackNumbering -or $FixPaths)) {
-            Write-Warning "No processing step was requested. Use -AudioIntegrity, -CheckTrackNumbering, or -FixPaths to select work to perform."
+        if (-not ($AudioIntegrity -or $CheckTrackNumbering -or $FixPaths -or $RemoveEmptyDirectories)) {
+            Write-Warning "No processing step was requested. Use -AudioIntegrity, -CheckTrackNumbering, -FixPaths, or -RemoveEmptyDirectories to select work to perform."
             return
         }
 
@@ -399,6 +410,55 @@ function Invoke-IncomingMusic {
 
             $movedCount = @($moveResults | Where-Object { $_.Moved }).Count
             Write-Host ("FixPaths: moved {0} of {1} audio folder(s) into artist folders." -f $movedCount, $moveResults.Count) -ForegroundColor $(if ($movedCount) { 'Green' } else { 'Yellow' })
+        }
+
+        # =====================================================================
+        # Step 4: -RemoveEmptyDirectories (prune empty folders; mutating, last)
+        # =====================================================================
+        if ($RemoveEmptyDirectories) {
+            $removeResults = [System.Collections.Generic.List[object]]::new()
+
+            # A directory is "empty" when its subtree contains no files at all (a
+            # folder holding only other empty folders is itself empty). Process
+            # deepest-first (longest path first) so that removing a leaf empty
+            # folder lets its now-empty parent be removed in the same pass. The
+            # base -Path itself is never removed.
+            $subDirs = @(Get-ChildItem -LiteralPath $baseRoot -Directory -Recurse -ErrorAction SilentlyContinue) |
+                       Sort-Object { $_.FullName.Length } -Descending
+
+            foreach ($dir in $subDirs) {
+                # Re-test existence: a parent may have been removed already this pass.
+                if (-not (Test-Path -LiteralPath $dir.FullName)) { continue }
+
+                $hasFile = Get-ChildItem -LiteralPath $dir.FullName -File -Recurse -Force -ErrorAction SilentlyContinue |
+                           Select-Object -First 1
+                if ($hasFile) { continue }
+
+                $removed = $false
+                if ($PSCmdlet.ShouldProcess($dir.FullName, "Remove empty directory")) {
+                    try {
+                        Remove-Item -LiteralPath $dir.FullName -Recurse -Force -ErrorAction Stop
+                        $removed = $true
+                    }
+                    catch { Write-Warning "RemoveEmptyDirectories: failed to remove '$($dir.FullName)': $($_.Exception.Message)" }
+                }
+
+                $removeResults.Add([PSCustomObject][ordered]@{
+                    Step      = 'RemoveEmptyDirectories'
+                    Directory = $dir.FullName
+                    Removed   = $removed
+                })
+            }
+
+            $removeResults
+
+            $removedCount = @($removeResults | Where-Object { $_.Removed }).Count
+            if ($removeResults.Count -eq 0) {
+                Write-Host "Remove empty directories: none found." -ForegroundColor Green
+            }
+            else {
+                Write-Host ("Remove empty directories: removed {0} of {1} empty folder(s)." -f $removedCount, $removeResults.Count) -ForegroundColor $(if ($removedCount) { 'Green' } else { 'Yellow' })
+            }
         }
     }
 }
