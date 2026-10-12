@@ -11,8 +11,8 @@ function Invoke-IncomingMusic {
 
     When several steps are requested they run in a fixed, safe order: the
     read-only / in-place steps first (-AudioIntegrity, -CheckTrackNumbering) and
-    the folder-moving step (-FixPaths) last, so moving a folder never pulls it out
-    from under an earlier step.
+    the folder-moving steps (-OrganizeByArtist, -RemoveEmptyDirectories) last, so
+    moving or removing a folder never pulls it out from under an earlier step.
 
     Steps currently available:
 
@@ -34,14 +34,16 @@ function Invoke-IncomingMusic {
         Requires the TagLibSharp library used by Get-AudioTags (downloaded and
         cached on first use).
 
-    -FixPaths
+    -OrganizeByArtist
         For every audio folder, read the tags and move the folder under an artist
-        folder at the base -Path, based on the album artist:
-          * all files share one AlbumArtist -> <Path>\<AlbumArtist>\<folder>
-          * AlbumArtist is 'Various Artists' / 'Various' / 'VA' -> <Path>\Various Artists\<folder>
+        folder, based on the album artist. The artist folders are created under
+        -OrganizeDestination when given, otherwise under the base -Path. Writing
+        <Dest> for whichever root applies:
+          * all files share one AlbumArtist -> <Dest>\<AlbumArtist>\<folder>
+          * AlbumArtist is 'Various Artists' / 'Various' / 'VA' -> <Dest>\Various Artists\<folder>
           * AlbumArtist blank for all files -> fall back to Artist:
-              - all files share one Artist -> <Path>\<Artist>\<folder>
-              - multiple distinct Artists   -> <Path>\Various Artists\<folder>
+              - all files share one Artist -> <Dest>\<Artist>\<folder>
+              - multiple distinct Artists   -> <Dest>\Various Artists\<folder>
         A folder whose AlbumArtist tags are present but inconsistent (and not a
         Various-Artists alias) is skipped with a warning rather than guessed at.
         Folders already in the right place, and moves whose destination already
@@ -52,16 +54,17 @@ function Invoke-IncomingMusic {
     -RemoveEmptyDirectories
         Recursively remove any sub-directory whose subtree contains no files (a
         folder holding only other empty folders counts as empty). Runs last so it
-        cleans up directories left behind by -FixPaths. The base -Path itself is
-        never removed.
+        cleans up directories left behind by -OrganizeByArtist. The base -Path
+        itself is never removed.
 
     The function supports -WhatIf and -Confirm: under -WhatIf the renames, moves,
     and removals are previewed without touching anything.
 
 .PARAMETER Path
     The root directory whose sub-directories will be processed. Audio files
-    directly in this root are included as well. For -FixPaths this is also the
-    base under which artist folders are created.
+    directly in this root are included as well. For -OrganizeByArtist this is the
+    base under which artist folders are created, unless -OrganizeDestination is
+    given.
 
 .PARAMETER AudioIntegrity
     Enable the audio-integrity step described above.
@@ -69,8 +72,14 @@ function Invoke-IncomingMusic {
 .PARAMETER CheckTrackNumbering
     Enable the track-numbering check described above.
 
-.PARAMETER FixPaths
+.PARAMETER OrganizeByArtist
     Enable the tag-based folder-reorganization step described above.
+
+.PARAMETER OrganizeDestination
+    For -OrganizeByArtist, the base directory under which artist folders are
+    created. Defaults to -Path. Created if it does not exist. Use this to move
+    organized albums into a separate library root (e.g. organize from an incoming
+    folder into D:\Music).
 
 .PARAMETER RemoveEmptyDirectories
     Enable the empty-directory pruning step described above.
@@ -83,15 +92,21 @@ function Invoke-IncomingMusic {
     PSCustomObjects describing the actions/findings of each enabled step:
       -AudioIntegrity      : one object per flagged file (Step 'AudioIntegrity').
       -CheckTrackNumbering : one object per folder (Step 'CheckTrackNumbering').
-      -FixPaths            : one object per folder acted on or skipped (Step 'FixPaths').
+      -OrganizeByArtist    : one object per folder acted on or skipped (Step 'OrganizeByArtist').
 
 .EXAMPLE
     Invoke-IncomingMusic -Path 'D:\Incoming' -AudioIntegrity
 
 .EXAMPLE
-    Invoke-IncomingMusic -Path 'D:\Incoming' -FixPaths -WhatIf
+    Invoke-IncomingMusic -Path 'D:\Incoming' -OrganizeByArtist -WhatIf
 
     Previews where each album folder would be moved based on its album-artist tags.
+
+.EXAMPLE
+    Invoke-IncomingMusic -Path 'D:\Incoming' -OrganizeByArtist -OrganizeDestination 'D:\Music'
+
+    Organizes albums from the incoming folder into artist folders under a separate
+    library root (D:\Music) rather than in place.
 
 .EXAMPLE
     Invoke-IncomingMusic -Path 'D:\Incoming' -CheckTrackNumbering
@@ -108,7 +123,9 @@ function Invoke-IncomingMusic {
 
         [switch] $CheckTrackNumbering,
 
-        [switch] $FixPaths,
+        [switch] $OrganizeByArtist,
+
+        [string] $OrganizeDestination,
 
         [switch] $RemoveEmptyDirectories,
 
@@ -136,8 +153,8 @@ function Invoke-IncomingMusic {
             return
         }
 
-        if (-not ($AudioIntegrity -or $CheckTrackNumbering -or $FixPaths -or $RemoveEmptyDirectories)) {
-            Write-Warning "No processing step was requested. Use -AudioIntegrity, -CheckTrackNumbering, -FixPaths, or -RemoveEmptyDirectories to select work to perform."
+        if (-not ($AudioIntegrity -or $CheckTrackNumbering -or $OrganizeByArtist -or $RemoveEmptyDirectories)) {
+            Write-Warning "No processing step was requested. Use -AudioIntegrity, -CheckTrackNumbering, -OrganizeByArtist, or -RemoveEmptyDirectories to select work to perform."
             return
         }
 
@@ -146,7 +163,7 @@ function Invoke-IncomingMusic {
 
         # Discover the directories (root + every sub-directory) that directly
         # contain at least one audio file. Snapshot the full paths up front so a
-        # folder move in -FixPaths cannot disturb iteration.
+        # folder move in -OrganizeByArtist cannot disturb iteration.
         $getAudioDirs = {
             $allDirs = @(Get-Item -LiteralPath $baseRoot) +
                        @(Get-ChildItem -LiteralPath $baseRoot -Directory -Recurse -ErrorAction SilentlyContinue)
@@ -284,9 +301,25 @@ function Invoke-IncomingMusic {
         }
 
         # =====================================================================
-        # Step 3: -FixPaths (move folders under artist folders; mutating, last)
+        # Step 3: -OrganizeByArtist (move folders under artist folders; mutating)
         # =====================================================================
-        if ($FixPaths) {
+        if ($OrganizeByArtist) {
+            # Artist folders are created under -OrganizeDestination when supplied,
+            # otherwise under the base path. Resolve/create it up front.
+            if ($PSBoundParameters.ContainsKey('OrganizeDestination') -and $OrganizeDestination) {
+                if (-not (Test-Path -LiteralPath $OrganizeDestination -PathType Container)) {
+                    try { New-Item -ItemType Directory -Path $OrganizeDestination -Force | Out-Null }
+                    catch {
+                        Write-Error "OrganizeByArtist: could not create destination '$OrganizeDestination': $($_.Exception.Message)"
+                        return
+                    }
+                }
+                $organizeRoot = (Resolve-Path -LiteralPath $OrganizeDestination).ProviderPath
+            }
+            else {
+                $organizeRoot = $baseRoot
+            }
+
             $moveResults = [System.Collections.Generic.List[object]]::new()
 
             foreach ($dirPath in (& $getAudioDirs)) {
@@ -323,10 +356,10 @@ function Invoke-IncomingMusic {
                     }
                     else {
                         # Present but inconsistent and not all Various -> ambiguous.
-                        Write-Warning ("FixPaths: '{0}' has inconsistent AlbumArtist tags ({1}); skipping." -f `
+                        Write-Warning ("OrganizeByArtist: '{0}' has inconsistent AlbumArtist tags ({1}); skipping." -f `
                             $dirPath, ($distinctAA -join ', '))
                         $moveResults.Add([PSCustomObject][ordered]@{
-                            Step        = 'FixPaths'
+                            Step        = 'OrganizeByArtist'
                             Directory   = $dirPath
                             Destination = $null
                             Reason      = 'Inconsistent AlbumArtist'
@@ -346,9 +379,9 @@ function Invoke-IncomingMusic {
                         $reason     = 'Multiple Artists, AlbumArtist blank'
                     }
                     else {
-                        Write-Warning ("FixPaths: '{0}' has no AlbumArtist or Artist tags; skipping." -f $dirPath)
+                        Write-Warning ("OrganizeByArtist: '{0}' has no AlbumArtist or Artist tags; skipping." -f $dirPath)
                         $moveResults.Add([PSCustomObject][ordered]@{
-                            Step        = 'FixPaths'
+                            Step        = 'OrganizeByArtist'
                             Directory   = $dirPath
                             Destination = $null
                             Reason      = 'No artist tags'
@@ -361,15 +394,15 @@ function Invoke-IncomingMusic {
                 # Sanitize the artist name for use as a folder (strip chars illegal
                 # on Windows); collapse whitespace.
                 $safeArtist = ($destArtist -replace '[<>:"/\\|?*]', '_' -replace '\s+', ' ').Trim()
-                $destArtistDir = Join-Path $baseRoot $safeArtist
+                $destArtistDir = Join-Path $organizeRoot $safeArtist
                 $destPath      = Join-Path $destArtistDir $dir.Name
 
                 # Already in the right place? (parent dir is the target artist folder)
                 $currentParent = Split-Path $dir.FullName -Parent
                 if ($currentParent.TrimEnd('\','/').Equals($destArtistDir.TrimEnd('\','/'), [StringComparison]::OrdinalIgnoreCase)) {
-                    Write-Verbose "FixPaths: '$dirPath' already under '$safeArtist'; skipping."
+                    Write-Verbose "OrganizeByArtist: '$dirPath' already under '$safeArtist'; skipping."
                     $moveResults.Add([PSCustomObject][ordered]@{
-                        Step = 'FixPaths'; Directory = $dirPath; Destination = $destPath
+                        Step = 'OrganizeByArtist'; Directory = $dirPath; Destination = $destPath
                         Reason = "$reason (already placed)"; Moved = $false
                     })
                     continue
@@ -377,9 +410,9 @@ function Invoke-IncomingMusic {
 
                 # Destination already exists? Don't overwrite/merge.
                 if (Test-Path -LiteralPath $destPath) {
-                    Write-Warning ("FixPaths: destination '{0}' already exists; skipping '{1}'." -f $destPath, $dirPath)
+                    Write-Warning ("OrganizeByArtist: destination '{0}' already exists; skipping '{1}'." -f $destPath, $dirPath)
                     $moveResults.Add([PSCustomObject][ordered]@{
-                        Step = 'FixPaths'; Directory = $dirPath; Destination = $destPath
+                        Step = 'OrganizeByArtist'; Directory = $dirPath; Destination = $destPath
                         Reason = "$reason (destination exists)"; Moved = $false
                     })
                     continue
@@ -394,11 +427,11 @@ function Invoke-IncomingMusic {
                         Move-Item -LiteralPath $dir.FullName -Destination $destPath -ErrorAction Stop
                         $moved = $true
                     }
-                    catch { Write-Warning "FixPaths: failed to move '$($dir.FullName)' to '$destPath': $($_.Exception.Message)" }
+                    catch { Write-Warning "OrganizeByArtist: failed to move '$($dir.FullName)' to '$destPath': $($_.Exception.Message)" }
                 }
 
                 $moveResults.Add([PSCustomObject][ordered]@{
-                    Step        = 'FixPaths'
+                    Step        = 'OrganizeByArtist'
                     Directory   = $dirPath
                     Destination = $destPath
                     Reason      = $reason
@@ -409,7 +442,7 @@ function Invoke-IncomingMusic {
             $moveResults
 
             $movedCount = @($moveResults | Where-Object { $_.Moved }).Count
-            Write-Host ("FixPaths: moved {0} of {1} audio folder(s) into artist folders." -f $movedCount, $moveResults.Count) -ForegroundColor $(if ($movedCount) { 'Green' } else { 'Yellow' })
+            Write-Host ("OrganizeByArtist: moved {0} of {1} audio folder(s) into artist folders." -f $movedCount, $moveResults.Count) -ForegroundColor $(if ($movedCount) { 'Green' } else { 'Yellow' })
         }
 
         # =====================================================================

@@ -12,7 +12,7 @@ BeforeAll {
     }
 }
 
-Describe 'Invoke-IncomingMusic -FixPaths' {
+Describe 'Invoke-IncomingMusic -OrganizeByArtist' {
 
     BeforeEach {
         $script:root = New-TestDir
@@ -30,7 +30,7 @@ Describe 'Invoke-IncomingMusic -FixPaths' {
                 $InputObject | ForEach-Object { [PSCustomObject]@{ AlbumArtist = 'The Beatles'; Artist = 'The Beatles'; Track = 1 } }
             }
 
-            Invoke-IncomingMusic -Path $root -FixPaths -Confirm:$false 6>$null | Out-Null
+            Invoke-IncomingMusic -Path $root -OrganizeByArtist -Confirm:$false 6>$null | Out-Null
 
             Test-Path (Join-Path $root 'The Beatles\Revolver') | Should -BeTrue
             Test-Path $album | Should -BeFalse
@@ -46,7 +46,7 @@ Describe 'Invoke-IncomingMusic -FixPaths' {
                         $InputObject | ForEach-Object { [PSCustomObject]@{ AlbumArtist = $va; Artist = 'Someone'; Track = 1 } }
                     }.GetNewClosure()
 
-                    Invoke-IncomingMusic -Path $root2 -FixPaths -Confirm:$false 6>$null | Out-Null
+                    Invoke-IncomingMusic -Path $root2 -OrganizeByArtist -Confirm:$false 6>$null | Out-Null
 
                     Test-Path (Join-Path $root2 'Various Artists\comp') | Should -BeTrue -Because "alias '$va' should map to Various Artists"
                 }
@@ -63,7 +63,7 @@ Describe 'Invoke-IncomingMusic -FixPaths' {
                 )
             }
 
-            $warnings = Invoke-IncomingMusic -Path $root -FixPaths -Confirm:$false 3>&1 6>$null |
+            $warnings = Invoke-IncomingMusic -Path $root -OrganizeByArtist -Confirm:$false 3>&1 6>$null |
                         Where-Object { $_ -is [System.Management.Automation.WarningRecord] }
 
             ($warnings | Out-String) | Should -Match 'inconsistent AlbumArtist'
@@ -79,7 +79,7 @@ Describe 'Invoke-IncomingMusic -FixPaths' {
                 $InputObject | ForEach-Object { [PSCustomObject]@{ AlbumArtist = ''; Artist = 'Radiohead'; Track = 1 } }
             }
 
-            Invoke-IncomingMusic -Path $root -FixPaths -Confirm:$false 6>$null | Out-Null
+            Invoke-IncomingMusic -Path $root -OrganizeByArtist -Confirm:$false 6>$null | Out-Null
 
             Test-Path (Join-Path $root 'Radiohead\OK Computer') | Should -BeTrue
         }
@@ -93,7 +93,7 @@ Describe 'Invoke-IncomingMusic -FixPaths' {
                 )
             }
 
-            Invoke-IncomingMusic -Path $root -FixPaths -Confirm:$false 6>$null | Out-Null
+            Invoke-IncomingMusic -Path $root -OrganizeByArtist -Confirm:$false 6>$null | Out-Null
 
             Test-Path (Join-Path $root 'Various Artists\mixtape') | Should -BeTrue
         }
@@ -108,8 +108,8 @@ Describe 'Invoke-IncomingMusic -FixPaths' {
                 $InputObject | ForEach-Object { [PSCustomObject]@{ AlbumArtist = 'The Beatles'; Artist = 'The Beatles'; Track = 1 } }
             }
 
-            $results = @(Invoke-IncomingMusic -Path $root -FixPaths -Confirm:$false 6>$null |
-                         Where-Object { $_.Step -eq 'FixPaths' -and $_.Directory -like '*Revolver' })
+            $results = @(Invoke-IncomingMusic -Path $root -OrganizeByArtist -Confirm:$false 6>$null |
+                         Where-Object { $_.Step -eq 'OrganizeByArtist' -and $_.Directory -like '*Revolver' })
 
             # It should remain in place and be reported as not moved.
             Test-Path (Join-Path $root 'The Beatles\Revolver') | Should -BeTrue
@@ -124,7 +124,7 @@ Describe 'Invoke-IncomingMusic -FixPaths' {
                 $InputObject | ForEach-Object { [PSCustomObject]@{ AlbumArtist = 'The Beatles'; Artist = 'The Beatles'; Track = 1 } }
             }
 
-            $warnings = Invoke-IncomingMusic -Path $root -FixPaths -Confirm:$false 3>&1 6>$null |
+            $warnings = Invoke-IncomingMusic -Path $root -OrganizeByArtist -Confirm:$false 3>&1 6>$null |
                         Where-Object { $_ -is [System.Management.Automation.WarningRecord] }
 
             ($warnings | Out-String) | Should -Match 'already exists'
@@ -140,10 +140,46 @@ Describe 'Invoke-IncomingMusic -FixPaths' {
                 $InputObject | ForEach-Object { [PSCustomObject]@{ AlbumArtist = 'The Beatles'; Artist = 'The Beatles'; Track = 1 } }
             }
 
-            Invoke-IncomingMusic -Path $root -FixPaths -WhatIf 6>$null | Out-Null
+            Invoke-IncomingMusic -Path $root -OrganizeByArtist -WhatIf 6>$null | Out-Null
 
             Test-Path $album | Should -BeTrue
             Test-Path (Join-Path $root 'The Beatles\Revolver') | Should -BeFalse
+        }
+    }
+
+    Context '-OrganizeDestination' {
+
+        It 'creates artist folders under the destination path, not the base path' {
+            $album = New-Album -Relative 'incoming\Revolver'
+            $dest  = New-TestDir
+            try {
+                Mock -ModuleName PwshMusicTools Get-AudioTags {
+                    $InputObject | ForEach-Object { [PSCustomObject]@{ AlbumArtist = 'The Beatles'; Artist = 'The Beatles'; Track = 1 } }
+                }
+
+                Invoke-IncomingMusic -Path $root -OrganizeByArtist -OrganizeDestination $dest -Confirm:$false 6>$null | Out-Null
+
+                # Moved under the destination, not under the base path.
+                Test-Path (Join-Path $dest 'The Beatles\Revolver') | Should -BeTrue
+                Test-Path (Join-Path $root 'The Beatles\Revolver') | Should -BeFalse
+                Test-Path $album | Should -BeFalse
+            }
+            finally { Remove-TestDir -Path $dest }
+        }
+
+        It 'creates the destination path if it does not exist' {
+            $album = New-Album -Relative 'incoming\OK Computer'
+            $dest  = Join-Path (New-TestDir) 'library'   # does not exist yet
+            try {
+                Mock -ModuleName PwshMusicTools Get-AudioTags {
+                    $InputObject | ForEach-Object { [PSCustomObject]@{ AlbumArtist = 'Radiohead'; Artist = 'Radiohead'; Track = 1 } }
+                }
+
+                Invoke-IncomingMusic -Path $root -OrganizeByArtist -OrganizeDestination $dest -Confirm:$false 6>$null | Out-Null
+
+                Test-Path (Join-Path $dest 'Radiohead\OK Computer') | Should -BeTrue
+            }
+            finally { Remove-TestDir -Path (Split-Path $dest -Parent) }
         }
     }
 }
