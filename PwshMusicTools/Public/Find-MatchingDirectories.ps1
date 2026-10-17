@@ -189,15 +189,32 @@ function Find-MatchingDirectories {
 
     function Get-LeafScore {
         <#
-            Best of two signals: raw-leaf similarity (catches typos and small
-            edits) and qualifier-stripped similarity (catches "album" vs
-            "album (live)"). The higher of the two is used.
+            Scores a pair of leaf names on two signals and returns both so the
+            caller can rank honestly:
+
+              Score          - raw normalized Levenshtein similarity of the leaves
+                               AS WRITTEN. This is what is reported as MatchScore,
+                               so a pair whose names differ never claims 1.0.
+              QualifierScore - similarity after stripping a trailing qualifier
+                               (e.g. " [2026 Remaster]", " (live)") from each leaf.
+                               Lets a base name pair with a qualified variant even
+                               though the raw names differ.
+              Candidate      - the better of the two, used only to decide whether a
+                               pair clears -Threshold at all.
+              QualifierOnly  - $true when the pair matches via qualifier stripping
+                               but is NOT a raw exact match; used to rank a genuine
+                               exact match ahead of a qualifier-only one.
         #>
         param([string]$A, [string]$B)
-        $raw = Get-Similarity -A $A -B $B
-        $normalized = Get-Similarity -A (Get-NormalizedLeaf $A) -B (Get-NormalizedLeaf $B)
-        if ($normalized -gt $raw) { return $normalized }
-        return $raw
+        $raw        = Get-Similarity -A $A -B $B
+        $qualifier  = Get-Similarity -A (Get-NormalizedLeaf $A) -B (Get-NormalizedLeaf $B)
+        $candidate  = if ($qualifier -gt $raw) { $qualifier } else { $raw }
+        [PSCustomObject]@{
+            Score         = $raw
+            QualifierScore = $qualifier
+            Candidate     = $candidate
+            QualifierOnly = ($raw -lt 1.0 -and $qualifier -gt $raw)
+        }
     }
 
     $firstEntries = @(Get-Entries -Root $firstRoot -MaxDepth $Depth)
@@ -236,22 +253,32 @@ function Find-MatchingDirectories {
         foreach ($s in $secondEntries) {
             if ($f.Segments -ne $s.Segments) { continue }
             if ($f.Parent -ne $s.Parent) { continue }
-            $score = Get-LeafScore -A $f.Leaf -B $s.Leaf
-            if ($score -ge $Threshold) {
+            $leaf = Get-LeafScore -A $f.Leaf -B $s.Leaf
+            # A pair qualifies if EITHER the raw or the qualifier-stripped score
+            # clears the threshold, but the reported Score is always the raw one.
+            if ($leaf.Candidate -ge $Threshold) {
                 [PSCustomObject]@{
-                    First  = $f
-                    Second = $s
-                    Score  = $score
+                    First         = $f
+                    Second        = $s
+                    Score         = $leaf.Score
+                    QualifierOnly = $leaf.QualifierOnly
+                    ExactKey      = ($f.Key -eq $s.Key)
                 }
             }
         }
     }
 
-    # Sort best score first. Ties are broken toward exact-key matches, then by key
-    # so results are deterministic.
+    # Rank best-first so the greedy one-to-one picker takes the strongest pairs
+    # first. Order of preference:
+    #   1. a genuine exact match (raw Score 1.0) over a qualifier-only match, so
+    #      "The Album"<->"The Album" always beats "The Album"<->"The Album [Remaster]";
+    #   2. higher raw Score;
+    #   3. exact relative-key match (tie-break);
+    #   4. key, for deterministic output.
     $ordered = $candidates | Sort-Object `
+        @{ Expression = { -not $_.QualifierOnly }; Descending = $true }, `
         @{ Expression = 'Score'; Descending = $true }, `
-        @{ Expression = { $_.First.Key -eq $_.Second.Key }; Descending = $true }, `
+        @{ Expression = 'ExactKey'; Descending = $true }, `
         @{ Expression = { $_.First.Key } }
 
     $usedFirst = @{}

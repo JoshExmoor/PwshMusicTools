@@ -141,6 +141,34 @@ Describe 'Find-MatchingDirectories' {
             # The exact-name 'Greatest Hits' should win over the longer variant.
             (Split-Path $leafPairs[0].First -Leaf) | Should -Be 'Greatest Hits'
         }
+
+        It 'reports a score below 1.0 for a qualifier-only (non-exact) match' {
+            # 'The Album' pairs with 'The Album [2026 Remaster]' via qualifier
+            # stripping, but the raw names differ, so the score must NOT be 1.0.
+            New-Item -ItemType Directory -Path (Join-Path $a 'Band\The Album')                   -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $b 'Band\The Album [2026 Remaster]')   -Force | Out-Null
+
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 -Fuzzy -Threshold 0.3)
+
+            $pair = $result | Where-Object { (Split-Path $_.First -Leaf) -eq 'The Album' }
+            $pair | Should -Not -BeNullOrEmpty
+            (Split-Path $pair.Second -Leaf) | Should -Be 'The Album [2026 Remaster]'
+            $pair.MatchScore | Should -BeLessThan 1.0
+        }
+
+        It 'prefers a genuine exact match over a qualifier-only one for the same folder' {
+            # The second side has both the exact name and a remastered variant.
+            # The exact pairing must win and report a score of 1.0.
+            New-Item -ItemType Directory -Path (Join-Path $a 'Band\The Album')                 -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $b 'Band\The Album')                 -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $b 'Band\The Album [2026 Remaster]') -Force | Out-Null
+
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 -Fuzzy -Threshold 0.3)
+
+            $pair = $result | Where-Object { (Split-Path $_.First -Leaf) -eq 'The Album' }
+            (Split-Path $pair.Second -Leaf) | Should -Be 'The Album'
+            $pair.MatchScore | Should -Be 1.0
+        }
     }
 
     Context 'input validation' {
