@@ -141,33 +141,65 @@ Describe 'Find-MatchingDirectories' {
             # The exact-name 'Greatest Hits' should win over the longer variant.
             (Split-Path $leafPairs[0].First -Leaf) | Should -Be 'Greatest Hits'
         }
+    }
 
-        It 'reports a score below 1.0 for a qualifier-only (non-exact) match' {
-            # 'The Album' pairs with 'The Album [2026 Remaster]' via qualifier
-            # stripping, but the raw names differ, so the score must NOT be 1.0.
-            New-Item -ItemType Directory -Path (Join-Path $a 'Band\The Album')                   -Force | Out-Null
-            New-Item -ItemType Directory -Path (Join-Path $b 'Band\The Album [2026 Remaster]')   -Force | Out-Null
+    Context '-IncludeNoMatches' {
 
-            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 -Fuzzy -Threshold 0.3)
+        It 'emits NoMatch rows for unmatched FirstDir directories (exact)' {
+            New-Item -ItemType Directory -Path (Join-Path $a 'Shared')   -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $a 'OnlyLeft') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $b 'Shared')   -Force | Out-Null
 
-            $pair = $result | Where-Object { (Split-Path $_.First -Leaf) -eq 'The Album' }
-            $pair | Should -Not -BeNullOrEmpty
-            (Split-Path $pair.Second -Leaf) | Should -Be 'The Album [2026 Remaster]'
-            $pair.MatchScore | Should -BeLessThan 1.0
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 1 -IncludeNoMatches)
+
+            $noMatch = $result | Where-Object { $_.First -eq (Join-Path $a 'OnlyLeft') }
+            $noMatch.Second     | Should -Be 'NoMatch'
+            $noMatch.MatchScore | Should -Be 0
+
+            # The matched directory is still reported normally.
+            $matched = $result | Where-Object { $_.First -eq (Join-Path $a 'Shared') }
+            $matched.Second     | Should -Be (Join-Path $b 'Shared')
+            $matched.MatchScore | Should -Be 1.0
         }
 
-        It 'prefers a genuine exact match over a qualifier-only one for the same folder' {
-            # The second side has both the exact name and a remastered variant.
-            # The exact pairing must win and report a score of 1.0.
-            New-Item -ItemType Directory -Path (Join-Path $a 'Band\The Album')                 -Force | Out-Null
-            New-Item -ItemType Directory -Path (Join-Path $b 'Band\The Album')                 -Force | Out-Null
-            New-Item -ItemType Directory -Path (Join-Path $b 'Band\The Album [2026 Remaster]') -Force | Out-Null
+        It 'does not emit NoMatch rows without the switch' {
+            New-Item -ItemType Directory -Path (Join-Path $a 'OnlyLeft') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $b 'OnlyRight') -Force | Out-Null
 
-            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 -Fuzzy -Threshold 0.3)
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 1)
 
-            $pair = $result | Where-Object { (Split-Path $_.First -Leaf) -eq 'The Album' }
-            (Split-Path $pair.Second -Leaf) | Should -Be 'The Album'
-            $pair.MatchScore | Should -Be 1.0
+            ($result | Where-Object { $_.Second -eq 'NoMatch' }) | Should -BeNullOrEmpty
+            $result.Count | Should -Be 0
+        }
+
+        It 'does not include SecondDir-only directories as NoMatch rows' {
+            # NoMatch is for FirstDir entries only; a directory that exists only
+            # under SecondDir must not appear.
+            New-Item -ItemType Directory -Path (Join-Path $a 'OnlyLeft')  -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $b 'OnlyRight') -Force | Out-Null
+
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 1 -IncludeNoMatches)
+
+            ($result | Where-Object { $_.First -like '*OnlyRight*' }) | Should -BeNullOrEmpty
+            $onlyLeft = $result | Where-Object { $_.First -eq (Join-Path $a 'OnlyLeft') }
+            $onlyLeft.Second | Should -Be 'NoMatch'
+        }
+
+        It 'emits NoMatch rows for unmatched FirstDir directories (fuzzy)' {
+            New-Item -ItemType Directory -Path (Join-Path $a 'Band\Album')        -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $a 'Band\Lonely')       -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $b 'Band\Album (live)') -Force | Out-Null
+
+            $result = @(Find-MatchingDirectories -FirstDir $a -SecondDir $b -Depth 2 -Fuzzy -Threshold 0.5 -IncludeNoMatches)
+
+            # 'Band\Lonely' has no counterpart -> NoMatch.
+            $lonely = $result | Where-Object { $_.First -eq (Join-Path $a 'Band\Lonely') }
+            $lonely.Second     | Should -Be 'NoMatch'
+            $lonely.MatchScore | Should -Be 0
+
+            # The fuzzy pairing is still present.
+            $album = $result | Where-Object { $_.First -eq (Join-Path $a 'Band\Album') }
+            (Split-Path $album.Second -Leaf) | Should -Be 'Album (live)'
         }
     }
 

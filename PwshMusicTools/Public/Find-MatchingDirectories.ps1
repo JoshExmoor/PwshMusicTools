@@ -44,11 +44,20 @@
     Minimum similarity score (0.0 to 1.0) for a fuzzy pair to be kept. Only used
     with -Fuzzy. Defaults to 0.8. Higher is stricter.
 
+.PARAMETER IncludeNoMatches
+    Also emit a row for every FirstDir directory that was not matched to any
+    SecondDir directory. For these rows Second is the literal string 'NoMatch'
+    and MatchScore is 0. Matched rows are unaffected. Useful for finding which
+    directories exist on the first side but have no counterpart on the second.
+
 .OUTPUTS
     An array of PSCustomObjects, one per matched pair, each with:
       First      - full path of the matching directory under FirstDir
-      Second     - full path of the matching directory under SecondDir
-      MatchScore - similarity score (always 1.0 for exact matches)
+      Second     - full path of the matching directory under SecondDir, or the
+                   literal 'NoMatch' for an unmatched FirstDir directory when
+                   -IncludeNoMatches is used
+      MatchScore - similarity score (always 1.0 for exact matches, 0 for a
+                   -IncludeNoMatches 'NoMatch' row)
       Depth      - zero-based depth of the match below the root, so a direct
                    child of the root (e.g. '<root>\artist') is 0, a grandchild
                    ('<root>\artist\album') is 1, and so on.
@@ -90,7 +99,10 @@ function Find-MatchingDirectories {
 
         [Parameter(Mandatory = $false)]
         [ValidateRange(0.0, 1.0)]
-        [double]$Threshold = 0.8
+        [double]$Threshold = 0.8,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$IncludeNoMatches
     )
 
     if (-not (Test-Path -LiteralPath $FirstDir -PathType Container)) {
@@ -189,31 +201,37 @@ function Find-MatchingDirectories {
 
     function Get-LeafScore {
         <#
-            Scores a pair of leaf names on two signals and returns both so the
-            caller can rank honestly:
-
-              Score          - raw normalized Levenshtein similarity of the leaves
-                               AS WRITTEN. This is what is reported as MatchScore,
-                               so a pair whose names differ never claims 1.0.
-              QualifierScore - similarity after stripping a trailing qualifier
-                               (e.g. " [2026 Remaster]", " (live)") from each leaf.
-                               Lets a base name pair with a qualified variant even
-                               though the raw names differ.
-              Candidate      - the better of the two, used only to decide whether a
-                               pair clears -Threshold at all.
-              QualifierOnly  - $true when the pair matches via qualifier stripping
-                               but is NOT a raw exact match; used to rank a genuine
-                               exact match ahead of a qualifier-only one.
+            Best of two signals: raw-leaf similarity (catches typos and small
+            edits) and qualifier-stripped similarity (catches "album" vs
+            "album (live)"). The higher of the two is used.
         #>
         param([string]$A, [string]$B)
-        $raw        = Get-Similarity -A $A -B $B
-        $qualifier  = Get-Similarity -A (Get-NormalizedLeaf $A) -B (Get-NormalizedLeaf $B)
-        $candidate  = if ($qualifier -gt $raw) { $qualifier } else { $raw }
-        [PSCustomObject]@{
-            Score         = $raw
-            QualifierScore = $qualifier
-            Candidate     = $candidate
-            QualifierOnly = ($raw -lt 1.0 -and $qualifier -gt $raw)
+        $raw = Get-Similarity -A $A -B $B
+        $normalized = Get-Similarity -A (Get-NormalizedLeaf $A) -B (Get-NormalizedLeaf $B)
+        if ($normalized -gt $raw) { return $normalized }
+        return $raw
+    }
+
+    function Add-NoMatchRows {
+        <#
+            When -IncludeNoMatches is set, append a row for every FirstDir entry
+            whose FullPath is not already present as a 'First' in $Result. These
+            rows carry Second = 'NoMatch' and MatchScore = 0. $MatchedKeys is the
+            set (hashtable) of first-side relative keys already matched.
+        #>
+        param(
+            [System.Collections.Generic.List[object]]$Result,
+            [object[]]$FirstEntries,
+            [hashtable]$MatchedKeys
+        )
+        foreach ($e in $FirstEntries) {
+            if ($MatchedKeys.ContainsKey($e.Key)) { continue }
+            $Result.Add([PSCustomObject]@{
+                    First      = $e.FullPath
+                    Second     = 'NoMatch'
+                    MatchScore = 0
+                    Depth      = $e.Segments - 1
+                })
         }
     }
 
@@ -228,6 +246,7 @@ function Find-MatchingDirectories {
         foreach ($e in $secondEntries) {
             if (-not $secondByKey.ContainsKey($e.Key)) { $secondByKey[$e.Key] = $e }
         }
+        $matchedKeys = @{}
         foreach ($e in $firstEntries) {
             if ($secondByKey.ContainsKey($e.Key)) {
                 $result.Add([PSCustomObject]@{
@@ -236,8 +255,10 @@ function Find-MatchingDirectories {
                         MatchScore = 1.0
                         Depth      = $e.Segments - 1
                     })
+                $matchedKeys[$e.Key] = $true
             }
         }
+        if ($IncludeNoMatches) { Add-NoMatchRows -Result $result -FirstEntries $firstEntries -MatchedKeys $matchedKeys }
         # Return a typed [object[]]. Casting (rather than a unary-comma wrapper)
         # keeps a 0- or 1-element result a well-formed array for @() and indexing
         # callers, without the comma's side effect of re-nesting under @(...).
@@ -253,32 +274,22 @@ function Find-MatchingDirectories {
         foreach ($s in $secondEntries) {
             if ($f.Segments -ne $s.Segments) { continue }
             if ($f.Parent -ne $s.Parent) { continue }
-            $leaf = Get-LeafScore -A $f.Leaf -B $s.Leaf
-            # A pair qualifies if EITHER the raw or the qualifier-stripped score
-            # clears the threshold, but the reported Score is always the raw one.
-            if ($leaf.Candidate -ge $Threshold) {
+            $score = Get-LeafScore -A $f.Leaf -B $s.Leaf
+            if ($score -ge $Threshold) {
                 [PSCustomObject]@{
-                    First         = $f
-                    Second        = $s
-                    Score         = $leaf.Score
-                    QualifierOnly = $leaf.QualifierOnly
-                    ExactKey      = ($f.Key -eq $s.Key)
+                    First  = $f
+                    Second = $s
+                    Score  = $score
                 }
             }
         }
     }
 
-    # Rank best-first so the greedy one-to-one picker takes the strongest pairs
-    # first. Order of preference:
-    #   1. a genuine exact match (raw Score 1.0) over a qualifier-only match, so
-    #      "The Album"<->"The Album" always beats "The Album"<->"The Album [Remaster]";
-    #   2. higher raw Score;
-    #   3. exact relative-key match (tie-break);
-    #   4. key, for deterministic output.
+    # Sort best score first. Ties are broken toward exact-key matches, then by key
+    # so results are deterministic.
     $ordered = $candidates | Sort-Object `
-        @{ Expression = { -not $_.QualifierOnly }; Descending = $true }, `
         @{ Expression = 'Score'; Descending = $true }, `
-        @{ Expression = 'ExactKey'; Descending = $true }, `
+        @{ Expression = { $_.First.Key -eq $_.Second.Key }; Descending = $true }, `
         @{ Expression = { $_.First.Key } }
 
     $usedFirst = @{}
@@ -296,6 +307,9 @@ function Find-MatchingDirectories {
         $usedFirst[$c.First.Key] = $true
         $usedSecond[$c.Second.FullPath] = $true
     }
+
+    # $usedFirst already holds the relative keys of every matched FirstDir entry.
+    if ($IncludeNoMatches) { Add-NoMatchRows -Result $result -FirstEntries $firstEntries -MatchedKeys $usedFirst }
 
     # Return a typed [object[]]. Casting (rather than a unary-comma wrapper)
     # keeps a 0- or 1-element result a well-formed array for @() and indexing
