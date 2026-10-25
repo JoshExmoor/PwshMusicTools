@@ -42,7 +42,12 @@ BeforeAll {
         $path
     }
 
-    $script:ffmpegAvailable = [bool](Get-Command ffmpeg -ErrorAction SilentlyContinue)
+}
+
+# -Skip on a Describe is evaluated during discovery, before BeforeAll runs, so the
+# tool check must happen here or the real-ffmpeg tests would always be skipped.
+BeforeDiscovery {
+    $ffmpegAvailable = [bool](Get-Command ffmpeg -ErrorAction SilentlyContinue)
 }
 
 Describe 'Get-FlacStreamInfo' {
