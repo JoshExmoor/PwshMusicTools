@@ -92,71 +92,8 @@ function Sync-SongFiles {
     $extAlternation = ($AudioExtensions | ForEach-Object { [Regex]::Escape($_) }) -join '|'
     $audioPattern = "^(?<track>\d+).*\.($extAlternation)$"
 
-    function Get-TrackNumber {
-        <#
-            Returns the leading track number of a file name as an integer, or $null
-            if the name does not start with digits. Parsing as an integer makes
-            "01" and "1" compare equal and avoids the "1 matches 10" prefix problem.
-        #>
-        param([Parameter(Mandatory = $true)][string]$Name)
-
-        if ($Name -match '^\d+') {
-            return [int]$Matches[0]
-        }
-        return $null
-    }
-
-    function Get-Title {
-        <#
-            Extracts the comparable title portion of a file name: drops the leading
-            track number and any following separator (space, dash, dot, underscore,
-            parentheses), drops the extension, and lower-cases / collapses whitespace.
-            "05 - You A Millionaire.flac" -> "you a millionaire".
-        #>
-        param([Parameter(Mandatory = $true)][string]$Name)
-
-        $base = [System.IO.Path]::GetFileNameWithoutExtension($Name)
-        # Remove leading digits and the separators that commonly follow a track number.
-        $title = $base -replace '^\s*\d+\s*[-_.\)\]]*\s*', ''
-        return ($title -replace '\s+', ' ').Trim().ToLowerInvariant()
-    }
-
-    function Get-Similarity {
-        <#
-            Normalized Levenshtein similarity in [0,1]: 1 - distance / maxLen.
-            Two empty strings are defined as identical (1.0).
-        #>
-        param([string]$A, [string]$B)
-
-        if ($A -eq $B) { return 1.0 }
-        $lenA = $A.Length
-        $lenB = $B.Length
-        if ($lenA -eq 0 -or $lenB -eq 0) { return 0.0 }
-
-        $prev = [int[]]::new($lenB + 1)
-        $curr = [int[]]::new($lenB + 1)
-        for ($j = 0; $j -le $lenB; $j++) { $prev[$j] = $j }
-
-        for ($i = 1; $i -le $lenA; $i++) {
-            $curr[0] = $i
-            $cA = $A[$i - 1]
-            for ($j = 1; $j -le $lenB; $j++) {
-                $cost = if ($cA -eq $B[$j - 1]) { 0 } else { 1 }
-                $del = $prev[$j] + 1
-                $ins = $curr[$j - 1] + 1
-                $sub = $prev[$j - 1] + $cost
-                $min = $del
-                if ($ins -lt $min) { $min = $ins }
-                if ($sub -lt $min) { $min = $sub }
-                $curr[$j] = $min
-            }
-            $tmp = $prev; $prev = $curr; $curr = $tmp
-        }
-
-        $distance = $prev[$lenB]
-        $maxLen = [Math]::Max($lenA, $lenB)
-        return 1.0 - ($distance / $maxLen)
-    }
+    # Get-TrackNumber, Get-TrackTitle and Get-StringSimilarity are shared module
+    # helpers defined in Private\TrackMatching.ps1.
 
     # --- Validate inputs -------------------------------------------------------
 
@@ -267,9 +204,9 @@ function Sync-SongFiles {
         # too dissimilar, so a shifted listing is flagged rather than mis-renamed.
         # The score is always computed so it can be shown in the preview table; the
         # threshold only governs whether a pair is skipped.
-        $renameTitle = Get-Title -Name $File.Name
-        $refTitle = Get-Title -Name $RefFile.Name
-        $titleScore = Get-Similarity -A $renameTitle -B $refTitle
+        $renameTitle = Get-TrackTitle -Name $File.Name
+        $refTitle = Get-TrackTitle -Name $RefFile.Name
+        $titleScore = Get-StringSimilarity -A $renameTitle -B $refTitle
         if ($TitleMatchThreshold -gt 0 -and $titleScore -lt $TitleMatchThreshold) {
             Write-Warning ("Title mismatch for track {0} (similarity {1:N2} < {2:N2}): rename '{3}' vs reference '{4}'. Skipping - these may be different releases. Lower -TitleMatchThreshold to override." -f `
                 $track, $titleScore, $TitleMatchThreshold, $File.Name, $RefFile.Name)

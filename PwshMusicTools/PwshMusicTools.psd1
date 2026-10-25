@@ -33,6 +33,7 @@
         'Update-M3UPath'
         'Invoke-IncomingMusic'
         'Sync-SongFiles'
+        'Sync-SongTags'
         'Sync-SongDirectories'
     )
 

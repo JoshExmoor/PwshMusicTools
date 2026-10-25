@@ -46,51 +46,8 @@ function Get-AudioTags {
     )
 
     begin {
-        # ---- Ensure TagLibSharp is loaded (download + cache on first use) ----
-        if (-not ('TagLib.File' -as [type])) {
-            $cacheDir = Join-Path $env:LOCALAPPDATA 'TagLibSharp'
-            $dllPath  = Join-Path $cacheDir 'TagLibSharp.dll'
-
-            if (-not (Test-Path -LiteralPath $dllPath)) {
-                Write-Verbose 'TagLibSharp not cached - downloading from NuGet...'
-                New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
-
-                $nupkg = Join-Path $cacheDir 'taglibsharp.nupkg'
-                $url   = 'https://www.nuget.org/api/v2/package/TagLibSharp'
-
-                # TLS 1.2 for older Windows PowerShell defaults
-                try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
-
-                Invoke-WebRequest -Uri $url -OutFile $nupkg -UseBasicParsing
-
-                # A .nupkg is a zip archive; extract and locate the managed DLL.
-                $extractDir = Join-Path $cacheDir 'extracted'
-                if (Test-Path -LiteralPath $extractDir) { Remove-Item -LiteralPath $extractDir -Recurse -Force }
-                Expand-Archive -LiteralPath $nupkg -DestinationPath $extractDir -Force
-
-                # Prefer the most compatible build: netstandard2.0 > netstandard2.1 > net* fallback.
-                $candidate =
-                    Get-ChildItem -Path $extractDir -Recurse -Filter 'TagLibSharp.dll' |
-                    Sort-Object {
-                        switch -Wildcard ($_.Directory.Name) {
-                            'netstandard2.0' { 0 }
-                            'netstandard2.1' { 1 }
-                            'netstandard*'   { 2 }
-                            default          { 3 }
-                        }
-                    } |
-                    Select-Object -First 1
-
-                if (-not $candidate) {
-                    throw 'Could not locate TagLibSharp.dll inside the downloaded NuGet package.'
-                }
-
-                Copy-Item -LiteralPath $candidate.FullName -Destination $dllPath -Force
-                Remove-Item -LiteralPath $nupkg, $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-            }
-
-            Add-Type -Path $dllPath
-        }
+        # Ensure TagLibSharp is loaded (downloaded and cached on first use).
+        Import-TagLibSharp
     }
 
     process {
