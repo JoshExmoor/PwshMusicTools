@@ -59,6 +59,13 @@ Describe 'Invoke-IncomingMusic' {
             Test-Path (Join-Path $album 'CORRUPTED unreadable.flac') | Should -BeTrue
         }
 
+        It 'verifies FLAC MD5 signatures when scanning' {
+            Invoke-IncomingMusic -Path $root -AudioIntegrity -Confirm:$false 6>$null | Out-Null
+
+            Should -Invoke -ModuleName PwshMusicTools Test-AudioIntegrity -ParameterFilter { $VerifyFlacMD5 }
+            Should -Invoke -ModuleName PwshMusicTools Test-AudioIntegrity -Times 0 -ParameterFilter { -not $VerifyFlacMD5 }
+        }
+
         It 'leaves OK files untouched' {
             Invoke-IncomingMusic -Path $root -AudioIntegrity -Confirm:$false | Out-Null
 

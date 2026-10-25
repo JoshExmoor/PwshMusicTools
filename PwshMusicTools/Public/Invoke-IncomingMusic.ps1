@@ -23,7 +23,13 @@ function Invoke-IncomingMusic {
         Files already prefixed are left alone (so re-runs are idempotent). Every
         flagged file is listed at the end of the run and returned as output.
 
-        Requires ffmpeg and ffprobe on the PATH (used by Test-AudioIntegrity).
+        FLAC files are also verified against the MD5 signature stored in their
+        STREAMINFO block (Test-AudioIntegrity -VerifyFlacMD5), so a FLAC whose
+        frames decode cleanly but whose audio no longer matches that signature is
+        flagged too.
+
+        Requires ffmpeg and ffprobe on the PATH (used by Test-AudioIntegrity). The
+        FLAC MD5 check uses 'flac -t' when flac is on the PATH, otherwise ffmpeg.
 
     -CheckTrackNumbering
         For every audio folder, read the track numbers from the tags and verify
@@ -190,7 +196,7 @@ function Invoke-IncomingMusic {
 
             foreach ($dirPath in (& $getAudioDirs)) {
                 Write-Verbose "Checking integrity of audio files in '$dirPath'."
-                $checkResults = Test-AudioIntegrity -Path $dirPath -Extension $Extension
+                $checkResults = Test-AudioIntegrity -Path $dirPath -Extension $Extension -VerifyFlacMD5
 
                 foreach ($r in $checkResults) {
                     if ($r.Status -ne 'CORRUPT' -and $r.Status -ne 'ERROR') { continue }
