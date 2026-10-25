@@ -1,4 +1,31 @@
 function Test-AudioIntegrity {
+<#
+.SYNOPSIS
+    Check audio files for corruption by fully decoding them with ffmpeg.
+
+.DESCRIPTION
+    Decodes each file with ffmpeg using strict error detection and reports
+    OK, CORRUPT, or ERROR per file. Requires ffmpeg and ffprobe on the PATH.
+
+    For FLAC, ffmpeg verifies each frame's CRCs but not the whole-file MD5
+    signature stored in STREAMINFO. Use -VerifyFlacMD5 to also check that
+    signature.
+
+.PARAMETER VerifyFlacMD5
+    For FLAC files, also verify the decoded audio against the MD5 signature in
+    STREAMINFO. Uses 'flac -t' (the reference decoder) when flac is on the PATH;
+    otherwise falls back to hashing ffmpeg's decoded PCM, which supports 8, 16,
+    24 and 32-bit files. A mismatch marks the file CORRUPT. Files with no stored
+    signature are reported with Md5Check 'Unset' rather than as a pass.
+
+.OUTPUTS
+    One PSCustomObject per file. With -VerifyFlacMD5, FLAC results also carry
+    Md5Check (Match, Mismatch, Failed, Unset, Unchecked, Error), Md5Method
+    ('flac' or 'ffmpeg') and Md5Detail.
+
+.EXAMPLE
+    Test-AudioIntegrity D:\Music -Recurse -VerifyFlacMD5 | Where-Object Status -ne 'OK'
+#>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0, ValueFromPipeline, ValueFromPipelineByPropertyName)]
@@ -19,7 +46,9 @@ function Test-AudioIntegrity {
 
         [string]$CachePath = (Join-Path $env:LOCALAPPDATA 'Test-AudioIntegrity\cache.json'),
 
-        [string[]]$Extension = @('flac','mp3','m4a','aac','ogg','opus','wav','wma','ape','wv')
+        [string[]]$Extension = @('flac','mp3','m4a','aac','ogg','opus','wav','wma','ape','wv'),
+
+        [switch]$VerifyFlacMD5
     )
 
     begin {
@@ -64,7 +93,11 @@ function Test-AudioIntegrity {
         $cachedResults = [System.Collections.Generic.List[object]]::new()
         foreach ($file in $allFiles) {
             $c = $cache[$file.FullName]
-            if ($UseCache -and $c -and $c.Status -eq 'OK' `
+            # A cached FLAC 'OK' from a run without -VerifyFlacMD5 never had its
+            # MD5 checked, so it must be re-checked when that switch is used now.
+            $md5Pending = $VerifyFlacMD5 -and $c -and $file.Extension -ieq '.flac' -and
+                          (-not $c.PSObject.Properties['Md5Check'] -or $c.Md5Check -notin 'Match', 'Unset')
+            if ($UseCache -and $c -and $c.Status -eq 'OK' -and -not $md5Pending `
                 -and [double]$c.Size -eq $file.Length `
                 -and $c.LastWriteUtc -eq $file.LastWriteTimeUtc.ToString('o')) {
                 $cachedResults.Add($c)
@@ -80,11 +113,35 @@ function Test-AudioIntegrity {
         $measure = [bool]$MeasureDecoded
         $skipped = $cachedResults.Count
 
+        # FLAC MD5 verification: parallel runspaces cannot see private module
+        # functions, so pass their source in and recreate them per runspace.
+        $verifyMd5     = [bool]$VerifyFlacMD5
+        $flacExe       = $null
+        $flacHelperSrc = $null
+        if ($verifyMd5) {
+            $flacCmd = Get-Command flac -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($flacCmd) { $flacExe = $flacCmd.Source }
+            Write-Verbose ("FLAC MD5 verification via {0}." -f $(if ($flacExe) { "flac -t ($flacExe)" } else { 'the ffmpeg fallback' }))
+
+            # Read the helpers from the module's Private folder on disk rather than
+            # from the loaded functions, so this works however the module was loaded
+            # (normal import, an older loader, or this file dot-sourced on its own).
+            $flacHelperFile = Join-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'Private') 'FlacMD5.ps1'
+            if (-not (Test-Path -LiteralPath $flacHelperFile -PathType Leaf)) {
+                throw ("-VerifyFlacMD5 needs '{0}', which was not found. Make sure the module's Private " +
+                       "folder is present, then re-import the module with Import-Module <path>\PwshMusicTools.psd1 -Force.") -f $flacHelperFile
+            }
+            $flacHelperSrc = Get-Content -LiteralPath $flacHelperFile -Raw
+        }
+
         # The per-file work as a reusable scriptblock for -Parallel.
         $worker = {
             $file = $_
             $tol     = $using:tol
             $measure = $using:measure
+            $verifyMd5 = $using:verifyMd5
+            $flacExe   = $using:flacExe
+            if ($verifyMd5) { . ([scriptblock]::Create($using:flacHelperSrc)) }
 
             $ext = $file.Extension.TrimStart('.').ToLower()
             $errDetect = switch -Regex ($ext) {
@@ -137,6 +194,26 @@ function Test-AudioIntegrity {
                 } catch { }
             }
 
+            # FLAC STREAMINFO MD5 check (frame CRCs don't cover the whole-file
+            # signature). Skipped when the file already failed to decode at all.
+            $md5Check = $null; $md5Method = $null; $md5Detail = $null
+            if ($verifyMd5 -and $ext -eq 'flac' -and $status -ne 'ERROR') {
+                try { $m = Test-FlacMD5 -Path $file.FullName -FlacExe $flacExe }
+                catch { $m = [PSCustomObject]@{ Result = 'Error'; Method = $null; Detail = $_.Exception.Message } }
+                # Never leave the check silently blank: no result means it didn't run.
+                if ($null -eq $m -or -not $m.Result) {
+                    $m = [PSCustomObject]@{ Result = 'Error'; Method = $null; Detail = 'FLAC MD5 check returned no result' }
+                }
+
+                $md5Check  = $m.Result
+                $md5Method = $m.Method
+                $md5Detail = $m.Detail
+                if ($m.Result -in 'Mismatch', 'Failed') {
+                    if ($status -eq 'OK') { $status = 'CORRUPT'; $detail = $m.Detail }
+                    else { $detail = "$detail | $($m.Detail)" }
+                }
+            }
+
             [PSCustomObject]@{
                 File           = $file.FullName
                 Name           = $file.Name
@@ -150,6 +227,9 @@ function Test-AudioIntegrity {
                 ErrDetect      = $errDetect
                 CheckedUtc     = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss")
                 Detail         = $detail
+                Md5Check       = $md5Check
+                Md5Method      = $md5Method
+                Md5Detail      = $md5Detail
                 Size           = $file.Length
                 LastWriteUtc   = $file.LastWriteTimeUtc.ToString('o')
             }
