@@ -55,6 +55,12 @@ function Invoke-IncomingMusic {
         Folders already in the right place, and moves whose destination already
         exists, are skipped.
 
+        A folder that contains corrupted files is never moved: files flagged
+        CORRUPT or ERROR by -AudioIntegrity in the same run (even under -WhatIf),
+        and files already carrying the 'CORRUPTED ' prefix from an earlier run.
+        Every such folder is listed at the end of the run with each corrupted
+        file and its error detail, so it can be repaired before organizing.
+
         Requires the TagLibSharp library used by Get-AudioTags.
 
     -RemoveEmptyDirectories
@@ -167,6 +173,22 @@ function Invoke-IncomingMusic {
         $extRegex = '\.(' + (($Extension | ForEach-Object { [regex]::Escape($_.TrimStart('.')) }) -join '|') + ')$'
         $baseRoot = (Resolve-Path -LiteralPath $Path).ProviderPath
 
+        # Corrupted files found by -AudioIntegrity this run, keyed by folder. Used
+        # by -OrganizeByArtist to hold those folders back instead of moving them.
+        $corruptDirs = @{}
+        $addCorrupt = {
+            param([string] $File, [string] $Status, [string] $Detail)
+            $dirKey = (Split-Path $File -Parent).TrimEnd('\', '/')
+            if (-not $corruptDirs.ContainsKey($dirKey)) {
+                $corruptDirs[$dirKey] = [System.Collections.Generic.List[object]]::new()
+            }
+            $corruptDirs[$dirKey].Add([PSCustomObject]@{ File = $File; Status = $Status; Detail = $Detail })
+        }
+
+        # Folders -OrganizeByArtist left in place because they hold corrupted
+        # files; reported in detail at the very end of the run.
+        $heldBack = [System.Collections.Generic.List[object]]::new()
+
         # Discover the directories (root + every sub-directory) that directly
         # contain at least one audio file. Snapshot the full paths up front so a
         # folder move in -OrganizeByArtist cannot disturb iteration.
@@ -205,6 +227,7 @@ function Invoke-IncomingMusic {
                     if (-not $file) { continue }
                     if ($file.Name.StartsWith($corruptPrefix)) {
                         Write-Verbose "Already flagged, skipping: $($file.Name)"
+                        & $addCorrupt $file.FullName $r.Status $r.Detail
                         continue
                     }
 
@@ -217,6 +240,10 @@ function Invoke-IncomingMusic {
                         }
                         catch { Write-Warning "Failed to rename '$($file.FullName)': $($_.Exception.Message)" }
                     }
+
+                    # Record it for -OrganizeByArtist (renamed or not, e.g. under -WhatIf).
+                    $currentPath = if ($renamed) { Join-Path $file.DirectoryName $newName } else { $file.FullName }
+                    & $addCorrupt $currentPath $r.Status $r.Detail
 
                     $flagged.Add([PSCustomObject][ordered]@{
                         Step         = 'AudioIntegrity'
@@ -335,6 +362,34 @@ function Invoke-IncomingMusic {
                 $files = Get-ChildItem -LiteralPath $dirPath -File -ErrorAction SilentlyContinue |
                          Where-Object { $_.Extension -match $extRegex }
                 if (-not $files) { continue }
+
+                # Never move a folder that holds corrupted files: ones flagged by
+                # -AudioIntegrity this run, or renamed with the CORRUPTED prefix by
+                # an earlier run. They are reported in detail at the end.
+                $dirKey = $dirPath.TrimEnd('\', '/')
+                $corruptHere = [System.Collections.Generic.List[object]]::new()
+                if ($corruptDirs.ContainsKey($dirKey)) { $corruptHere.AddRange($corruptDirs[$dirKey]) }
+                foreach ($f in $files) {
+                    if ($f.Name.StartsWith($corruptPrefix) -and
+                        -not ($corruptHere | Where-Object { $_.File -ieq $f.FullName })) {
+                        $corruptHere.Add([PSCustomObject]@{
+                            File   = $f.FullName
+                            Status = 'CORRUPTED'
+                            Detail = 'Flagged by an earlier -AudioIntegrity run (CORRUPTED prefix).'
+                        })
+                    }
+                }
+                if ($corruptHere.Count -gt 0) {
+                    $heldBack.Add([PSCustomObject]@{ Directory = $dirPath; Files = @($corruptHere) })
+                    $moveResults.Add([PSCustomObject][ordered]@{
+                        Step        = 'OrganizeByArtist'
+                        Directory   = $dirPath
+                        Destination = $null
+                        Reason      = "Held back: contains $($corruptHere.Count) corrupted file(s)"
+                        Moved       = $false
+                    })
+                    continue
+                }
 
                 $tags = @($files | Get-AudioTags)
 
@@ -498,6 +553,29 @@ function Invoke-IncomingMusic {
             else {
                 Write-Host ("Remove empty directories: removed {0} of {1} empty folder(s)." -f $removedCount, $removeResults.Count) -ForegroundColor $(if ($removedCount) { 'Green' } else { 'Yellow' })
             }
+        }
+
+        # =====================================================================
+        # End-of-run report: folders held back because of corrupted files
+        # =====================================================================
+        if ($heldBack.Count -gt 0) {
+            $rule = '=' * 78
+            Write-Host ''
+            Write-Host $rule -ForegroundColor Red
+            Write-Host ("NOT MOVED: {0} folder(s) contain corrupted or unreadable files and were left in place." -f $heldBack.Count) -ForegroundColor Red
+            Write-Host 'Repair or replace the files below (or delete them), then run -OrganizeByArtist again.' -ForegroundColor Red
+            foreach ($h in $heldBack) {
+                Write-Host ''
+                Write-Host ("  Folder: {0}" -f $h.Directory) -ForegroundColor Red
+                foreach ($cf in $h.Files) {
+                    Write-Host ("    [{0}] {1}" -f $cf.Status, (Split-Path $cf.File -Leaf)) -ForegroundColor Red
+                    if ($cf.Detail) {
+                        Write-Host ("        {0}" -f $cf.Detail) -ForegroundColor DarkYellow
+                    }
+                }
+            }
+            Write-Host $rule -ForegroundColor Red
+            Write-Warning ("OrganizeByArtist held back {0} folder(s) containing corrupted files; see the report above." -f $heldBack.Count)
         }
     }
 }

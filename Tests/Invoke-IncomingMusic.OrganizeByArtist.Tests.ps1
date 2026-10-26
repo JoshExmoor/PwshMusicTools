@@ -147,6 +147,88 @@ Describe 'Invoke-IncomingMusic -OrganizeByArtist' {
         }
     }
 
+    Context 'folders with corrupted files' {
+
+        BeforeEach {
+            Mock -ModuleName PwshMusicTools Get-AudioTags {
+                [PSCustomObject]@{ AlbumArtist = 'Band'; Artist = 'Band'; Track = 1 }
+            }
+        }
+
+        It 'does not move a folder holding a file flagged CORRUPTED by an earlier run, but moves clean ones' {
+            $clean  = New-Album -Relative 'u\Clean'
+            $broken = New-Album -Relative 'u\Broken' -Files @('01 a.flac', 'CORRUPTED 02 b.flac')
+
+            $r = @(Invoke-IncomingMusic -Path $root -OrganizeByArtist -Confirm:$false 3>$null 6>$null)
+
+            Test-Path $broken                        | Should -BeTrue    # left in place
+            Test-Path (Join-Path $root 'Band\Broken') | Should -BeFalse
+            Test-Path (Join-Path $root 'Band\Clean')  | Should -BeTrue    # clean folder still moved
+            $held = $r | Where-Object { $_.Step -eq 'OrganizeByArtist' -and $_.Directory -eq $broken }
+            $held.Moved  | Should -BeFalse
+            $held.Reason | Should -Match 'corrupted'
+        }
+
+        It 'does not move a folder with a file -AudioIntegrity flags in the same run' {
+            $bad  = New-Album -Relative 'u\Bad'
+            $good = New-Album -Relative 'u\Good'
+            Mock -ModuleName PwshMusicTools Get-Command { [PSCustomObject]@{ Name = $Name } } -ParameterFilter { $Name -in 'ffmpeg', 'ffprobe' }
+            Mock -ModuleName PwshMusicTools Test-AudioIntegrity {
+                if ($Path -like '*\Bad') {
+                    [PSCustomObject]@{ File = (Join-Path $Path '02 b.flac'); Status = 'CORRUPT'; Detail = 'Invalid data found when processing input' }
+                }
+            }
+
+            Invoke-IncomingMusic -Path $root -AudioIntegrity -OrganizeByArtist -Confirm:$false 3>$null 6>$null | Out-Null
+
+            Test-Path (Join-Path $bad 'CORRUPTED 02 b.flac') | Should -BeTrue   # renamed in place
+            Test-Path (Join-Path $root 'Band\Bad')           | Should -BeFalse  # not moved
+            Test-Path (Join-Path $root 'Band\Good')          | Should -BeTrue
+        }
+
+        It 'reports a held-back folder as not moved under -WhatIf, before any rename has happened' {
+            $bad = New-Album -Relative 'u\Bad'
+            Mock -ModuleName PwshMusicTools Get-Command { [PSCustomObject]@{ Name = $Name } } -ParameterFilter { $Name -in 'ffmpeg', 'ffprobe' }
+            Mock -ModuleName PwshMusicTools Test-AudioIntegrity {
+                [PSCustomObject]@{ File = (Join-Path $Path '02 b.flac'); Status = 'ERROR'; Detail = 'decode failed' }
+            }
+
+            $r = @(Invoke-IncomingMusic -Path $root -AudioIntegrity -OrganizeByArtist -WhatIf 3>$null 6>$null)
+
+            Test-Path (Join-Path $bad '02 b.flac') | Should -BeTrue   # -WhatIf: not renamed
+            $held = $r | Where-Object { $_.Step -eq 'OrganizeByArtist' -and $_.Directory -eq $bad }
+            $held.Reason | Should -Match 'corrupted'
+        }
+
+        It 'lists each held-back folder, file, status and error detail at the end of the run' {
+            New-Album -Relative 'u\Clean' | Out-Null
+            $bad = New-Album -Relative 'u\Bad'
+            Mock -ModuleName PwshMusicTools Get-Command { [PSCustomObject]@{ Name = $Name } } -ParameterFilter { $Name -in 'ffmpeg', 'ffprobe' }
+            Mock -ModuleName PwshMusicTools Test-AudioIntegrity {
+                if ($Path -like '*\Bad') {
+                    [PSCustomObject]@{ File = (Join-Path $Path '02 b.flac'); Status = 'CORRUPT'; Detail = 'FLAC MD5 mismatch: stored aaa, decoded bbb' }
+                }
+            }
+
+            $out = (Invoke-IncomingMusic -Path $root -AudioIntegrity -OrganizeByArtist -Confirm:$false 3>&1 6>&1 | Out-String)
+
+            $out | Should -Match 'NOT MOVED: 1 folder'
+            $out | Should -Match ([regex]::Escape("Folder: $bad"))
+            $out | Should -Match '\[CORRUPT\] CORRUPTED 02 b\.flac'
+            $out | Should -Match 'FLAC MD5 mismatch: stored aaa, decoded bbb'
+            # The report comes last, after the per-step summaries.
+            $out.LastIndexOf('NOT MOVED') | Should -BeGreaterThan $out.LastIndexOf('OrganizeByArtist: moved')
+        }
+
+        It 'prints no held-back report when nothing is corrupted' {
+            New-Album -Relative 'u\Clean' | Out-Null
+
+            $out = (Invoke-IncomingMusic -Path $root -OrganizeByArtist -Confirm:$false 3>&1 6>&1 | Out-String)
+
+            $out | Should -Not -Match 'NOT MOVED'
+        }
+    }
+
     Context '-OrganizeDestination' {
 
         It 'creates artist folders under the destination path, not the base path' {
