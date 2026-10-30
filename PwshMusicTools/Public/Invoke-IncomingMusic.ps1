@@ -37,6 +37,16 @@ function Invoke-IncomingMusic {
         as integers, so 1, 01 and 001 are the same track. This step only reports
         (a warning plus a result object per folder); it changes nothing.
 
+        Multi-disc folders numbered with a disc prefix (101, 102 ... for disc 1,
+        201, 202 ... for disc 2) are recognized when every track number is 101 or
+        higher and none is a multiple of 100. Each disc is then checked on its
+        own: discs must run 1, 2, 3 ... and each disc's tracks 01..max with no
+        gaps or duplicates; warnings name the disc. A folder mixing plain and
+        disc-prefixed numbers is checked as plain numbering and so still flagged.
+        The result object's Discs, MissingDiscs and Duplicates properties are
+        filled in for disc-prefixed folders (Missing then holds prefixed numbers
+        such as 203).
+
         Requires the TagLibSharp library used by Get-AudioTags (downloaded and
         cached on first use).
 
@@ -288,32 +298,33 @@ function Invoke-IncomingMusic {
                     if ($t.PSObject.Properties['Track'] -and $null -ne $t.Track) { $n = [int]$t.Track }
                     if ($n -gt 0) { $n }
                 }
-                $numbers = @($numbers | Sort-Object -Unique)
-
-                $complete = $false
-                $missing  = @()
-
-                if ($numbers.Count -gt 0) {
-                    $max      = ($numbers | Measure-Object -Maximum).Maximum
-                    $expected = 1..$max
-                    $missing  = @($expected | Where-Object { $_ -notin $numbers })
-                    $complete = ($missing.Count -eq 0)
-                }
+                # Plain (1..max) or disc-prefixed (101.., 201..) check; see Test-TrackSequence.
+                $check   = Test-TrackSequence -Number @($numbers)
+                $numbers = $check.Numbers
+                $missing = $check.Missing
 
                 $result = [PSCustomObject][ordered]@{
-                    Step        = 'CheckTrackNumbering'
-                    Directory   = $dirPath
-                    TrackCount  = @($tags).Count
-                    Numbers     = $numbers
-                    Max         = if ($numbers.Count) { ($numbers | Measure-Object -Maximum).Maximum } else { 0 }
-                    Missing     = $missing
-                    Complete    = $complete
+                    Step         = 'CheckTrackNumbering'
+                    Directory    = $dirPath
+                    TrackCount   = @($tags).Count
+                    Numbers      = $numbers
+                    Max          = $check.Max
+                    Missing      = $missing
+                    Complete     = $check.Complete
+                    Discs        = $check.Discs
+                    MissingDiscs = $check.MissingDiscs
+                    Duplicates   = $check.Duplicates
                 }
                 $trackResults.Add($result)
 
-                if (-not $complete) {
+                if (-not $result.Complete) {
                     if ($numbers.Count -eq 0) {
                         Write-Warning "Track numbering: no track numbers found in '$dirPath'."
+                    }
+                    elseif ($check.DiscPrefixed) {
+                        foreach ($problem in $check.Problems) {
+                            Write-Warning ("Track numbering: '{0}' {1}." -f $dirPath, $problem)
+                        }
                     }
                     else {
                         Write-Warning ("Track numbering: '{0}' is missing track(s): {1} (highest is {2})." -f `
