@@ -36,6 +36,7 @@
         'Sync-SongTags'
         'Sync-SongDirectories'
         'Move-FileToMatchingTree'
+        'Remove-EmptyDirectories'
     )
 
     CmdletsToExport   = @()
