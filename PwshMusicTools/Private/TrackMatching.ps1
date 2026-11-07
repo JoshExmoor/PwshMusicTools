@@ -1,5 +1,6 @@
 # Private helpers for pairing audio files across two folders by track number.
 # Shared by Sync-SongFiles (rename to match) and Sync-SongTags (copy tags).
+# Get-NameTrackNumber and Get-TitleKey serve Sync-LyricFiles.
 
 function Get-TrackNumber {
     <#
@@ -149,4 +150,108 @@ function Get-StringSimilarity {
     $distance = $prev[$lenB]
     $maxLen = [Math]::Max($lenA, $lenB)
     return 1.0 - ($distance / $maxLen)
+}
+
+function Get-NameTrackNumber {
+    <#
+        Finds the track number anywhere in a file name, for names that do not
+        always start with it ("Artist - Album - 05 - Title.lrc",
+        "Artist-Album-05-Title.lrc"). Used by Sync-LyricFiles. Returns an [int]
+        or $null.
+
+        Candidates are 1-3 digit numbers not glued to a letter or digit
+        ("Track5", "5th" and "1979" are never candidates). A disc-track token
+        "1-01" / "2.05" becomes 101 / 205, the disc-prefixed form
+        Test-TrackSequence understands; "101" is kept as-is. 0 is ignored.
+
+        A candidate is "strong" when it is delimited like a track number:
+        preceded by the start of the name or a '-' / '_' / '(' / '[' (spaces
+        allowed), and followed by the end, a '-' / '_' / '.' / ')' / ']' (spaces
+        allowed), or - for a number at the very start - a space ("01 Title").
+        Bare hyphens count, so "Artist-Album-01-Title" works.
+
+        The candidates are narrowed in order, each step applied only if it
+        leaves at least one candidate:
+          1. drop a number that ends the name (it is the title: "02 - 22");
+          2. keep numbers in -KnownTrack (the audio track numbers, if given);
+          3. keep strong candidates;
+          4. keep 1-2 digit numbers over 3-digit ones ("Blink-182-Enema-03-x");
+        then take the one at the start of the name if there is one ("01 Title
+        2 Remix" -> 1), otherwise the last one, nearest the title.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [int[]]$KnownTrack
+    )
+
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($Name).Trim()
+    $pattern = '(?<![\p{L}\p{N}])(?:(?<disc>\d)[-.](?<dt>\d{2})|(?<n>\d{1,3}))(?![\p{L}\p{N}])'
+
+    $cands = foreach ($m in [regex]::Matches($base, $pattern)) {
+        $value = if ($m.Groups['disc'].Success) {
+            [int]$m.Groups['disc'].Value * 100 + [int]$m.Groups['dt'].Value
+        }
+        else {
+            [int]$m.Groups['n'].Value
+        }
+        if ($m.Groups['disc'].Success -and [int]$m.Groups['dt'].Value -eq 0) { continue }
+        if ($value -lt 1) { continue }
+
+        $pre  = $base.Substring(0, $m.Index)
+        $post = $base.Substring($m.Index + $m.Length)
+        $atStart = $pre.Trim().Length -eq 0
+        $atEnd   = $post.Trim().Length -eq 0
+        $preStrong  = $atStart -or $pre -match '[-_(\[]\s*$'
+        $postStrong = $atEnd -or $post -match '^\s*[-_.)\]]' -or ($atStart -and $post -match '^\s')
+
+        [PSCustomObject]@{
+            Value   = $value
+            Digits  = if ($m.Groups['disc'].Success) { 3 } else { $m.Groups['n'].Value.Length }
+            AtStart = $atStart
+            AtEnd   = $atEnd
+            Strong  = ($preStrong -and $postStrong)
+        }
+    }
+    $cands = @($cands)
+    if ($cands.Count -eq 0) { return $null }
+
+    $steps = @(
+        { -not $_.AtEnd }
+        { -not $KnownTrack -or $_.Value -in $KnownTrack }
+        { $_.Strong }
+        { $_.Digits -le 2 }
+    )
+    foreach ($keep in $steps) {
+        $kept = @($cands | Where-Object $keep)
+        if ($kept.Count) { $cands = $kept }
+    }
+
+    $first = @($cands | Where-Object AtStart)
+    if ($first.Count) { return $first[0].Value }
+    return $cands[-1].Value
+}
+
+function Get-TitleKey {
+    <#
+        Returns the normalised title keys of a file name, for exact title
+        matching that ignores case, punctuation and whitespace: the whole base
+        name, its last ' - ' segment, and Get-TrackTitle's form (leading track
+        number removed). -Loose also adds the last bare-hyphen segment, for
+        lyric names like "Artist-Album-Title". Empty keys are dropped. Used by
+        Sync-LyricFiles for its title fallback.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [switch]$Loose
+    )
+
+    $base = [System.IO.Path]::GetFileNameWithoutExtension($Name)
+    $parts = @($base, @($base -split '[\s_]+-[\s_]+')[-1], (Get-TrackTitle -Name $Name))
+    if ($Loose) { $parts += @($base -split '-')[-1] }
+
+    $keys = foreach ($s in $parts) {
+        $k = $s.ToLowerInvariant() -replace '[^\p{L}\p{N}]', ''
+        if ($k) { $k }
+    }
+    return [object[]]@($keys | Select-Object -Unique)
 }
