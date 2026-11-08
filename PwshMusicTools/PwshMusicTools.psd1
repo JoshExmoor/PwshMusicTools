@@ -39,6 +39,7 @@
         'Remove-EmptyDirectories'
         'Move-FileWithTree'
         'Sync-LyricFiles'
+        'Export-AudioIntegrityReport'
     )
 
     CmdletsToExport   = @()
