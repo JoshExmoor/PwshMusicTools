@@ -117,10 +117,9 @@ function Sync-LyricFiles {
             throw '-LyricExtension must name an extension, e.g. .lrc or txt.'
         }
 
+        # Get-AudioExtension is shared with Find-CoverArt (Private\AudioExtensions.ps1).
         $audioExts = [System.Collections.Generic.HashSet[string]]::new(
-            [string[]]@('.mp3', '.flac', '.opus', '.ogg', '.oga', '.m4a', '.aac', '.wav',
-                        '.wma', '.ape', '.wv', '.aiff', '.aif', '.alac', '.mka'),
-            [StringComparer]::OrdinalIgnoreCase)
+            [string[]]@(Get-AudioExtension), [StringComparer]::OrdinalIgnoreCase)
         # A lyric extension that is also an audio extension is treated as lyrics.
         [void]$audioExts.Remove($lyricExt)
 

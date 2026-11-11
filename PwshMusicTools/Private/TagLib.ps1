@@ -7,6 +7,10 @@ function Import-TagLibSharp {
         NuGet package, extracts the managed DLL, and caches it under
         $env:LOCALAPPDATA\TagLibSharp. Later calls load the cached DLL and do not
         touch the network.
+
+        The download writes only to the private cache, so its cmdlets opt out of
+        the caller's -WhatIf/-Confirm (a SupportsShouldProcess caller would
+        otherwise skip or prompt for each step before its own single prompt).
     #>
     if ('TagLib.File' -as [type]) { return }
 
@@ -15,7 +19,7 @@ function Import-TagLibSharp {
 
     if (-not (Test-Path -LiteralPath $dllPath)) {
         Write-Verbose 'TagLibSharp not cached - downloading from NuGet...'
-        New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+        New-Item -ItemType Directory -Path $cacheDir -Force -WhatIf:$false -Confirm:$false | Out-Null
 
         $nupkg = Join-Path $cacheDir 'taglibsharp.nupkg'
         $url   = 'https://www.nuget.org/api/v2/package/TagLibSharp'
@@ -27,8 +31,8 @@ function Import-TagLibSharp {
 
         # A .nupkg is a zip archive; extract and locate the managed DLL.
         $extractDir = Join-Path $cacheDir 'extracted'
-        if (Test-Path -LiteralPath $extractDir) { Remove-Item -LiteralPath $extractDir -Recurse -Force }
-        Expand-Archive -LiteralPath $nupkg -DestinationPath $extractDir -Force
+        if (Test-Path -LiteralPath $extractDir) { Remove-Item -LiteralPath $extractDir -Recurse -Force -WhatIf:$false -Confirm:$false }
+        Expand-Archive -LiteralPath $nupkg -DestinationPath $extractDir -Force -WhatIf:$false -Confirm:$false
 
         # Prefer the most compatible build: netstandard2.0 > netstandard2.1 > net* fallback.
         $candidate =
@@ -47,8 +51,8 @@ function Import-TagLibSharp {
             throw 'Could not locate TagLibSharp.dll inside the downloaded NuGet package.'
         }
 
-        Copy-Item -LiteralPath $candidate.FullName -Destination $dllPath -Force
-        Remove-Item -LiteralPath $nupkg, $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+        Copy-Item -LiteralPath $candidate.FullName -Destination $dllPath -Force -WhatIf:$false -Confirm:$false
+        Remove-Item -LiteralPath $nupkg, $extractDir -Recurse -Force -ErrorAction SilentlyContinue -WhatIf:$false -Confirm:$false
     }
 
     Add-Type -Path $dllPath
@@ -98,4 +102,43 @@ function Copy-AudioFileTag {
         finally { $tgt.Dispose() }
     }
     finally { $ref.Dispose() }
+}
+
+function Get-EmbeddedPicture {
+    <#
+        Lists the pictures embedded in an audio file's tags as
+        { Type; MimeType; Data } objects (Type is the TagLib picture type name,
+        e.g. 'FrontCover'). Requires Import-TagLibSharp to have run first.
+
+        The file is opened with the cheapest read style: no audio properties
+        and, where TagLib supports it, lazy pictures, so picture bytes are only
+        read with -IncludeData (Data is $null otherwise). The file is always
+        disposed. Open errors propagate to the caller. A separate function so
+        tests can mock it without TagLib.
+    #>
+    [OutputType([object[]])]
+    param(
+        [Parameter(Mandatory)][string] $LiteralPath,
+        [switch] $IncludeData
+    )
+
+    $style = if ([enum]::IsDefined([TagLib.ReadStyle], 'PictureLazy')) { [TagLib.ReadStyle]::PictureLazy } else { [TagLib.ReadStyle]::None }
+    $list = [System.Collections.Generic.List[object]]::new()
+    $f = [TagLib.File]::Create($LiteralPath, $style)
+    try {
+        foreach ($p in @($f.Tag.Pictures)) {
+            if ($null -eq $p) { continue }
+            # Assigned directly (not via an if expression) so it stays a [byte[]].
+            $data = $null
+            if ($IncludeData) { $data = [byte[]]$p.Data.Data }
+            $list.Add([PSCustomObject]@{
+                Type     = [string]$p.Type
+                MimeType = [string]$p.MimeType
+                Data     = $data
+            })
+        }
+    }
+    finally { $f.Dispose() }
+
+    return [object[]]$list.ToArray()
 }

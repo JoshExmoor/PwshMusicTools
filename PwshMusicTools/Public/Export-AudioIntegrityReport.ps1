@@ -141,33 +141,7 @@ function Export-AudioIntegrityReport {
         $ErrorActionPreference = 'Stop'
 
         # --- Validate output paths before the (possibly hours-long) scan --------
-
-        function Get-WritableReportPath([string]$Value, [string]$Name) {
-            $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Value)
-            if (Test-Path -LiteralPath $full -PathType Container) {
-                throw "$Name '$full' is a directory, not a file."
-            }
-            $dir = Split-Path -Parent $full
-            if (-not $dir -or -not (Test-Path -LiteralPath $dir -PathType Container)) {
-                throw "$Name folder '$dir' does not exist."
-            }
-            try {
-                if (Test-Path -LiteralPath $full -PathType Leaf) {
-                    # Opening for write without truncating leaves the file as is.
-                    $stream = [System.IO.File]::Open($full, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write)
-                }
-                else {
-                    # Probe file is deleted on close, so -WhatIf leaves nothing behind.
-                    $stream = [System.IO.FileStream]::new($full, [System.IO.FileMode]::CreateNew,
-                        [System.IO.FileAccess]::Write, [System.IO.FileShare]::None, 1, [System.IO.FileOptions]::DeleteOnClose)
-                }
-                $stream.Dispose()
-            }
-            catch {
-                throw "$Name '$full' is not writable: $($_.Exception.Message)"
-            }
-            return $full
-        }
+        # Get-WritableReportPath is a shared helper in Private\ReportPath.ps1.
 
         $csvFull  = $null
         $jsonFull = $null

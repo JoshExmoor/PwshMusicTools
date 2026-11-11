@@ -40,6 +40,7 @@
         'Move-FileWithTree'
         'Sync-LyricFiles'
         'Export-AudioIntegrityReport'
+        'Find-CoverArt'
     )
 
     CmdletsToExport   = @()
