@@ -108,6 +108,14 @@ function Find-CoverArt {
 
         The rows are also returned to the pipeline.
 
+        Progress: while scanning, a progress bar (no percentage) shows the
+        folder currently being checked, for every folder walked, with a running
+        count such as 'Checked 1,234 folders, 87 without cover'. While copying
+        or extracting it shows the file being written. It is cleared when the
+        run ends, also if it fails or is interrupted. To hide it, set
+        $ProgressPreference = 'SilentlyContinue' or pass
+        -ProgressAction SilentlyContinue (PowerShell 7.4+).
+
     .PARAMETER Path
         Root of the tree to scan. Accepts pipeline input, including directory
         objects from Get-Item/Get-ChildItem; all piped folders form one run with
@@ -292,6 +300,9 @@ function Find-CoverArt {
         $parentCovers = [System.Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
         $copiedCount = 0
         $extractedCount = 0
+        # Progress counters: folders walked so far, music folders without a cover.
+        # A hashtable, so the nested $walk scopes update the same counters.
+        $progress = @{ Checked = 0; Missing = 0 }
 
         # Header info of an image file (Private\ImageInfo.ps1), read once per file.
         $getInfo = {
@@ -668,6 +679,11 @@ function Find-CoverArt {
         $walk = {
             param([string]$Dir)
             if (-not $seen.Add($Dir)) { return }
+            # Every folder walked, with or without audio (no percentage: the
+            # total is not known in advance).
+            Write-Progress -Activity 'Find-CoverArt' -Status $Dir `
+                -CurrentOperation ('Checked {0:N0} folders, {1:N0} without cover' -f $progress.Checked, $progress.Missing)
+            $progress.Checked++
             try {
                 $children = @(Get-ChildItem -LiteralPath $Dir -Force -ErrorAction Stop | Sort-Object Name)
             }
@@ -678,6 +694,7 @@ function Find-CoverArt {
             $files = @($children | Where-Object { -not $_.PSIsContainer })
             if (@($files | Where-Object { $audioExts.Contains($_.Extension) }).Count) {
                 & $examine $Dir $files
+                if (-not $rows[$rows.Count - 1].CoverPresent) { $progress.Missing++ }
             }
             foreach ($sub in @($children | Where-Object { $_.PSIsContainer })) {
                 # Junctions/symlinks are never followed.
@@ -708,7 +725,10 @@ function Find-CoverArt {
                     (($writes | ForEach-Object { $_.PromptLine }) -join "`n  ")
                 $action = if (@($writes | Where-Object Kind -ne 'Copy').Count) { 'Write cover art' } else { 'Copy cover art to expected name' }
                 if (Confirm-ShouldProcess -Cmdlet $PSCmdlet -Target $target -Action $action) {
+                    $written = 0
                     foreach ($w in $writes) {
+                        Write-Progress -Activity 'Find-CoverArt' -Status $w.Destination `
+                            -CurrentOperation ('Writing cover file {0:N0} of {1:N0}' -f (++$written), $writes.Count)
                         try {
                             switch ($w.Kind) {
                                 'Extract' {
@@ -760,6 +780,9 @@ function Find-CoverArt {
             }
         }
         finally {
+            # Cleared here so a failed or interrupted run leaves no stuck bar.
+            Write-Progress -Activity 'Find-CoverArt' -Completed
+
             # Append notes (unreadable image, larger candidate) to the Comment.
             foreach ($e in $rowNotes) {
                 if ($e.Notes.Count) {

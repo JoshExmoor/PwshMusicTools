@@ -332,6 +332,77 @@ Describe 'Find-CoverArt' {
         $rows[0] | Should -BeOfType [PSCustomObject]
     }
 
+    Context 'progress' {
+
+        BeforeEach {
+            Mock -ModuleName PwshMusicTools Write-Progress { }
+        }
+
+        It 'shows each folder walked in -Status, without a percentage' {
+            $album2 = Join-Path $root 'Other\Album 2'
+            New-EmptyFile -Dir $album2 -Name '01.mp3' | Out-Null
+
+            Find-CoverArt -Path $root 6>$null | Out-Null
+
+            foreach ($dir in @($root, (Join-Path $root 'Artist'), $album, (Join-Path $root 'Other'), $album2)) {
+                Should -Invoke Write-Progress -ModuleName PwshMusicTools -Times 1 -Exactly -ParameterFilter {
+                    $Activity -eq 'Find-CoverArt' -and $Status -eq $dir -and
+                        $CurrentOperation -match '^Checked \d+ folders, \d+ without cover$'
+                }
+            }
+            Should -Invoke Write-Progress -ModuleName PwshMusicTools -Times 0 -Exactly -ParameterFilter {
+                $PSBoundParameters.ContainsKey('PercentComplete')
+            }
+        }
+
+        It 'counts folders checked and music folders without a cover' {
+            $album2 = Join-Path $root 'Other'
+            New-EmptyFile -Dir $album2 -Name '01.mp3' | Out-Null
+
+            Find-CoverArt -Path $root 6>$null | Out-Null
+
+            # Walk order: root, Artist, Artist\Album (no cover), Other.
+            Should -Invoke Write-Progress -ModuleName PwshMusicTools -Times 1 -Exactly -ParameterFilter {
+                $Status -eq $album2 -and $CurrentOperation -eq 'Checked 3 folders, 1 without cover'
+            }
+        }
+
+        It 'shows the file being written during the write phase' {
+            Mock -ModuleName PwshMusicTools Confirm-ShouldProcess { $true }
+            New-TestImage -Dir $album -Name 'cover.jpg' | Out-Null
+
+            Find-CoverArt -Path $root -CopyToExpected 6>$null | Out-Null
+
+            $dest = Join-Path $album 'folder.jpg'
+            Should -Invoke Write-Progress -ModuleName PwshMusicTools -Times 1 -Exactly -ParameterFilter {
+                $Status -eq $dest -and -not $PSBoundParameters.ContainsKey('PercentComplete')
+            }
+        }
+
+        It 'ends with -Completed' {
+            $script:progressCalls = [System.Collections.Generic.List[object]]::new()
+            Mock -ModuleName PwshMusicTools Write-Progress { $script:progressCalls.Add([bool]$Completed) }
+
+            Find-CoverArt -Path $root 6>$null | Out-Null
+
+            $script:progressCalls.Count | Should -BeGreaterThan 1
+            $script:progressCalls[-1] | Should -BeTrue
+            @($script:progressCalls | Where-Object { $_ }).Count | Should -Be 1
+        }
+
+        It 'ends with -Completed when the run throws partway' {
+            $script:progressCalls = [System.Collections.Generic.List[object]]::new()
+            Mock -ModuleName PwshMusicTools Write-Progress { $script:progressCalls.Add([bool]$Completed) }
+            Mock -ModuleName PwshMusicTools Confirm-ShouldProcess { throw 'boom' }
+            New-TestImage -Dir $album -Name 'cover.jpg' | Out-Null
+
+            { Find-CoverArt -Path $root -CopyToExpected 6>$null } | Should -Throw '*boom*'
+
+            $script:progressCalls.Count | Should -BeGreaterThan 1
+            $script:progressCalls[-1] | Should -BeTrue
+        }
+    }
+
     Context 'image details' {
 
         It 'reports width, height and detected format' {
