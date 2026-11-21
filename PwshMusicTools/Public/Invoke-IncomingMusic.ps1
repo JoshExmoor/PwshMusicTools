@@ -31,6 +31,26 @@ function Invoke-IncomingMusic {
         Requires ffmpeg and ffprobe on the PATH (used by Test-AudioIntegrity). The
         FLAC MD5 check uses 'flac -t' when flac is on the PATH, otherwise ffmpeg.
 
+    -FlacCheck
+        Run FlacCheck (flaccheck.exe, which must be on the PATH) over the incoming
+        music to detect fake lossless files (e.g. MP3/AAC transcoded to FLAC):
+          flaccheck.exe scan <path> --mode <FlacCheckMode> --format html -o <report>
+                        --quiet --color never
+        and open the HTML report in the default browser. The step runs straight
+        after -AudioIntegrity and before -CheckTrackNumbering and the folder-moving
+        steps, so report paths match the incoming tree. Without -AudioIntegrity no
+        integrity check is forced; the order is only guaranteed when both are given.
+
+        The whole -Path directory is scanned in one run, including files that
+        -AudioIntegrity flagged as corrupt (or that carry the 'CORRUPTED ' prefix
+        from an earlier run).
+
+        The tool's exit code is informational only; success means the report file
+        was produced. If it was not, stderr is shown as a warning. The report is
+        opened only when it exists and is not empty; failing to open it is a
+        warning. Under -WhatIf nothing is run or opened. A missing flaccheck.exe,
+        or an unusable -FlacCheckReportPath, fails the command before any step runs.
+
     -CheckTrackNumbering
         For every audio folder, read the track numbers from the tags and verify
         they form a complete run 1..max with no gaps. Track numbers are compared
@@ -91,6 +111,17 @@ function Invoke-IncomingMusic {
 .PARAMETER AudioIntegrity
     Enable the audio-integrity step described above.
 
+.PARAMETER FlacCheck
+    Enable the FlacCheck fake-lossless scan and HTML report described above.
+
+.PARAMETER FlacCheckMode
+    FlacCheck analysis depth: fast, balanced (default) or max (slowest).
+
+.PARAMETER FlacCheckReportPath
+    Where to write the HTML report. Defaults to FlacCheck-<yyyyMMdd-HHmmss>.html in
+    the parent folder of -Path, or in the temp folder when that is not writable.
+    The parent folder must exist and the file must be writable; checked up front.
+
 .PARAMETER CheckTrackNumbering
     Enable the track-numbering check described above.
 
@@ -113,6 +144,8 @@ function Invoke-IncomingMusic {
 .OUTPUTS
     PSCustomObjects describing the actions/findings of each enabled step:
       -AudioIntegrity      : one object per flagged file (Step 'AudioIntegrity').
+      -FlacCheck           : one object (Step 'FlacCheck') with ReportPath, Mode, Scanned,
+                             ExitCode, Ran and Opened.
       -CheckTrackNumbering : one object per folder (Step 'CheckTrackNumbering').
       -OrganizeByArtist    : one object per folder acted on or skipped (Step 'OrganizeByArtist').
 
@@ -131,6 +164,15 @@ function Invoke-IncomingMusic {
     library root (D:\Music) rather than in place.
 
 .EXAMPLE
+    Invoke-IncomingMusic -Path 'D:\Incoming' -AudioIntegrity -FlacCheck
+
+    Validates the files, then scans the whole directory with FlacCheck and opens the
+    HTML report.
+
+.EXAMPLE
+    Invoke-IncomingMusic -Path 'D:\Incoming' -FlacCheck -FlacCheckMode max -FlacCheckReportPath 'D:\Reports\incoming.html'
+
+.EXAMPLE
     Invoke-IncomingMusic -Path 'D:\Incoming' -CheckTrackNumbering
 
     Reports any album folder with gaps in its track numbering.
@@ -142,6 +184,13 @@ function Invoke-IncomingMusic {
         [string] $Path,
 
         [switch] $AudioIntegrity,
+
+        [switch] $FlacCheck,
+
+        [ValidateSet('fast', 'balanced', 'max')]
+        [string] $FlacCheckMode = 'balanced',
+
+        [string] $FlacCheckReportPath,
 
         [switch] $CheckTrackNumbering,
 
@@ -175,13 +224,35 @@ function Invoke-IncomingMusic {
             return
         }
 
-        if (-not ($AudioIntegrity -or $CheckTrackNumbering -or $OrganizeByArtist -or $RemoveEmptyDirectories)) {
-            Write-Warning "No processing step was requested. Use -AudioIntegrity, -CheckTrackNumbering, -OrganizeByArtist, or -RemoveEmptyDirectories to select work to perform."
+        if (-not ($AudioIntegrity -or $FlacCheck -or $CheckTrackNumbering -or $OrganizeByArtist -or $RemoveEmptyDirectories)) {
+            Write-Warning "No processing step was requested. Use -AudioIntegrity, -FlacCheck, -CheckTrackNumbering, -OrganizeByArtist, or -RemoveEmptyDirectories to select work to perform."
             return
         }
 
         $extRegex = '\.(' + (($Extension | ForEach-Object { [regex]::Escape($_.TrimStart('.')) }) -join '|') + ')$'
         $baseRoot = (Resolve-Path -LiteralPath $Path).ProviderPath
+
+        # -FlacCheck prerequisites, checked before any step can move or rename files.
+        if ($FlacCheck) {
+            if (-not (Get-Command 'flaccheck.exe' -ErrorAction SilentlyContinue)) {
+                Write-Error "-FlacCheck requires 'flaccheck.exe' on the PATH, but it was not found."
+                return
+            }
+            if ($PSBoundParameters.ContainsKey('FlacCheckReportPath') -and $FlacCheckReportPath) {
+                try { $flacReport = Get-WritableReportPath -Value $FlacCheckReportPath -Name '-FlacCheckReportPath' }
+                catch { Write-Error $_.Exception.Message; return }
+            }
+            else {
+                $flacName = 'FlacCheck-{0:yyyyMMdd-HHmmss}.html' -f (Get-Date)
+                $flacParent = Split-Path -Parent $baseRoot
+                $flacReport = $null
+                if ($flacParent) {
+                    try { $flacReport = Get-WritableReportPath -Value (Join-Path $flacParent $flacName) -Name 'FlacCheck report' }
+                    catch { $flacReport = $null }
+                }
+                if (-not $flacReport) { $flacReport = Join-Path ([System.IO.Path]::GetTempPath()) $flacName }
+            }
+        }
 
         # Corrupted files found by -AudioIntegrity this run, keyed by folder. Used
         # by -OrganizeByArtist to hold those folders back instead of moving them.
@@ -275,6 +346,54 @@ function Invoke-IncomingMusic {
                 Write-Host ("Audio integrity: {0} file(s) flagged as corrupt or unreadable:" -f $flagged.Count) -ForegroundColor Yellow
                 foreach ($f in $flagged) { Write-Host ("  [{0}] {1}" -f $f.Status, $f.OriginalPath) -ForegroundColor Yellow }
             }
+        }
+
+        # =====================================================================
+        # Step 1b: -FlacCheck (fake-lossless scan + HTML report; after integrity)
+        # =====================================================================
+        if ($FlacCheck) {
+            # Always scan the whole incoming directory, including files flagged as corrupt.
+            $scanned = @($baseRoot)
+
+            $flacResult = [ordered]@{
+                Step       = 'FlacCheck'
+                ReportPath = $flacReport
+                Mode       = $FlacCheckMode
+                Scanned    = [object[]]@($scanned)
+                ExitCode   = $null
+                Ran        = $false
+                Opened     = $false
+            }
+
+            if ($PSCmdlet.ShouldProcess($flacReport, "Run flaccheck.exe scan '$baseRoot' --mode $FlacCheckMode --format html, then open the report")) {
+                try {
+                    # Remove any earlier report so a failed scan can't leave a stale one to be opened.
+                    if (Test-Path -LiteralPath $flacReport -PathType Leaf) { Remove-Item -LiteralPath $flacReport -Force }
+                    $scan = Invoke-FlacCheckScan -Path $baseRoot -Mode $FlacCheckMode -ReportPath $flacReport
+                    $flacResult.Ran = $true
+                    $flacResult.ExitCode = $scan.ExitCode
+                }
+                catch { Write-Warning "FlacCheck: could not run flaccheck.exe: $($_.Exception.Message)" }
+
+                if ($flacResult.Ran) {
+                    $reportFile = Get-Item -LiteralPath $flacReport -ErrorAction SilentlyContinue
+                    if ($reportFile -and $reportFile.Length -gt 0) {
+                        try {
+                            Open-FlacCheckReport -Path $flacReport
+                            $flacResult.Opened = $true
+                        }
+                        catch { Write-Warning "FlacCheck: could not open report '$flacReport': $($_.Exception.Message)" }
+                        Write-Host "FlacCheck: report written to $flacReport" -ForegroundColor Green
+                    }
+                    else {
+                        $msg = "FlacCheck: no report was produced at '$flacReport' (exit code $($scan.ExitCode))."
+                        if ($scan.StdErr) { $msg += " flaccheck.exe said: $($scan.StdErr)" }
+                        Write-Warning $msg
+                    }
+                }
+            }
+
+            [PSCustomObject]$flacResult
         }
 
         # =====================================================================
