@@ -32,6 +32,7 @@
         'Test-M3UPath'
         'Update-M3UPath'
         'Invoke-IncomingMusic'
+        'Invoke-MusicIngest'
         'Sync-SongFiles'
         'Sync-SongTags'
         'Sync-SongDirectories'
