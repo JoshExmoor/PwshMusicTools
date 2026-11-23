@@ -463,7 +463,7 @@ function Invoke-MusicIngest {
             }
             $syncWarn = @()
             try {
-                Sync-SongFiles -RenameDir $row.CurrentSourceFolder -ReferenceDir $row.TargetFolder @forward -WarningVariable syncWarn | Out-Host
+                Sync-SongFiles -RenameDir $row.CurrentSourceFolder -ReferenceDir $row.TargetFolder -IgnoreExtension -TitleMatchThreshold 0.01 @forward -WarningVariable syncWarn | Out-Host
                 $w = @($syncWarn | Where-Object { $_ }).Count
                 if ($WhatIfPreference) { $row.SyncResult = 'WhatIf' }
                 elseif ($w -gt 0) { $row.SyncResult = "Completed with $w warning(s)" }
